@@ -392,21 +392,6 @@
 			}
 		}
 
-
-			// Afficher la vignette avec le nombre total de boissons sélectionnées
-			function afficherVignettePanier() {
-				let commande = JSON.parse(localStorage.getItem('commande')) || {};
-				let totalArticles = Object.values(commande).reduce((acc, item) => acc + item.quantite, 0);
-				const vignette = document.getElementById('vignette-panier');
-
-				if (totalArticles > 0) {
-					vignette.style.display = 'block'; // Afficher la vignette si des articles sont sélectionnés
-					vignette.textContent = totalArticles;
-				} else {
-					vignette.style.display = 'none'; // Masquer la vignette si aucun article sélectionné
-				}
-			}
-
 			// Appeler mettreAJourBadge pour chaque boisson lors du chargement de la page
 			window.addEventListener('load', () => {
 				afficherBadgePanier(); // Afficher le badge du panier
@@ -440,7 +425,6 @@
 				// Mettre à jour le badge du panier et l'affichage du récapitulatif
 				afficherBadgePanier();
 				afficherCommande();
-				afficherVignettePanier(); // Mettre à jour la vignette à chaque ajout/suppression
 				
 				// Mettre à jour le badge de la boisson spécifique
 				mettreAJourBadge(id);
@@ -502,7 +486,13 @@
 					boissonsParCategorie[categorie] = [];
 				}
 
-				boissonsParCategorie[categorie].push(`${boisson.quantite}x ${boisson.nom}, ${boisson.volume}`);
+				// Vérifier si le nom de la boisson contient déjà une mention de volume (cl ou L)
+				let volumeMentionne = /\d+(cl|L)/i.test(boisson.nom);
+				let texteBoisson = volumeMentionne ? 
+					`${boisson.quantite}x ${boisson.nom}` : 
+					`${boisson.quantite}x ${boisson.nom}, ${boisson.volume}`;
+
+				boissonsParCategorie[categorie].push(texteBoisson);
 			}
 
 			// Générer le texte formaté
@@ -659,7 +649,7 @@
 			{id: 121, "nom": "Monster Bad Apple", "volume": "50cl", "categorie": "boissons-50cl"},
 			{id: 94, "nom": "AA Orange", "volume": "33cl", "categorie": "boissons-33cl"},
 			{id: 95, "nom": "AA Rouge", "volume": "33cl", "categorie": "boissons-33cl"},
-			{id: 96, "nom": "Turk Kizilay", "volume": "20cl", "categorie": "boissons-25cl"},
+			{id: 96, "nom": "Turk Kizilay 20cl", "volume": "25cl", "categorie": "boissons-25cl"},
 			{id: 97, "nom": "Redbull Coco", "volume": "25cl", "categorie": "boissons-25cl"},
 			{id: 98, "nom": "Redbull Seftali", "volume": "25cl", "categorie": "boissons-25cl"},
 			{id: 99, "nom": "Redbull Abricot", "volume": "25cl", "categorie": "boissons-25cl"},
@@ -699,14 +689,14 @@
 			{id: 138, "nom": "Pack de Hawai Caraibe 1,5L", "volume": "1,5L", "categorie": "boissons-1-5L"},
 			{id: 139, "nom": "Pack de Hawai Fraise 1,5L", "volume": "1,5L", "categorie": "boissons-1-5L"},
 			{id: 140, "nom": "Pack de Orangina Orange 1,5L", "volume": "1,5L", "categorie": "boissons-1-5L"},
-			{id: 141, "nom": "Pack de Oasis Cassis 2L", "volume": "2L", "categorie": "boissons-1-5L"},
-			{id: 142, "nom": "Pack de Oasis Fraise 2L", "volume": "2L", "categorie": "boissons-1-5L"},
-			{id: 143, "nom": "Pack de Oasis Tropical 2L", "volume": "2L", "categorie": "boissons-1-5L"},
+			{id: 141, "nom": "Pack de Oasis Cassis 2L", "volume": "1,5L", "categorie": "boissons-1-5L"},
+			{id: 142, "nom": "Pack de Oasis Fraise 2L", "volume": "1,5L", "categorie": "boissons-1-5L"},
+			{id: 143, "nom": "Pack de Oasis Tropical 2L", "volume": "1,5L", "categorie": "boissons-1-5L"},
 			{id: 144, "nom": "Pack de Bière Lech", "volume": "50cl", "categorie": "pl"},
 			{id: 145, "nom": "Pack de Bière Perla Mildowa", "volume": "50cl", "categorie": "pl"},
 			{id: 146, "nom": "Pack de Bière Karpackie", "volume": "50cl", "categorie": "pl"},
 			{id: 147, "nom": "Pack de Bière Tyskie", "volume": "50cl", "categorie": "pl"},
-			{id: 148, "nom": "Pack de Bière Zywie", "volume": "50cl", "categorie": "pl"},
+			{id: 148, "nom": "Pack de Bière Zywiek", "volume": "50cl", "categorie": "pl"},
 			{id: 149, "nom": "Pack de Bière Perla Chmielowa", "volume": "50cl", "categorie": "pl"},
 			{id: 150, "nom": "Pack de Bière Debowe", "volume": "50cl", "categorie": "pl"},
 			{id: 151, "nom": "Pack de Bière Warka Strong", "volume": "50cl", "categorie": "pl"},
@@ -761,11 +751,11 @@
 			{id: 200, nom: 'Chimay blanche', volume: '33cl', categorie: 'bt'},
 			{id: 201, nom: 'De Ranke XX Bitter', volume: '33cl', categorie: 'bt'},
 			{id: 202, nom: 'De Ranke Guldenberg', volume: '33cl', categorie: 'bt'},
-			{id: 203, nom: 'Seine Tripel Anvers', volume: '33cl', categorie: 'bt'},
+			{id: 203, nom: 'Tripel Anvers', volume: '33cl', categorie: 'bt'},
 			{id: 204, nom: 'Seine Zenne Pils', volume: '33cl', categorie: 'bt'},
 			{id: 205, nom: 'Seine Bruxellenins', volume: '33cl', categorie: 'bt'},
 			{id: 206, nom: 'Seine Jambe de bois', volume: '33cl', categorie: 'bt'},
-			{id: 207, nom: 'Taras Boulba', volume: '33cl', categorie: 'bt'},
+			{id: 207, nom: 'Seine Taras Boulba', volume: '33cl', categorie: 'bt'},
 			{id: 208, nom: 'BBP Babylone', volume: '33cl', categorie: 'bt'},
 			{id: 209, nom: 'BBP Jungle Joy', volume: '33cl', categorie: 'bt'},
 			{id: 210, nom: 'BBP Lazy Panda', volume: '33cl', categorie: 'bt'},
@@ -773,7 +763,7 @@
 			{id: 212, nom: 'Seine Zinnebier', volume: '33cl', categorie: 'bt'},
 			{id: 213, nom: 'BBP Juyce Junkie', volume: '33cl', categorie: 'bt'},
 			{id: 214, nom: 'BBP Terra Pils', volume: '33cl', categorie: 'bt'},
-			{id: 215, nom: 'Triple Bertha', volume: '33cl', categorie: 'bt'},
+			{id: 215, nom: 'BBP Triple Bertha', volume: '33cl', categorie: 'bt'},
 			{id: 216, nom: 'Orval', volume: '33cl', categorie: 'bt'},
 			{id: 217, nom: 'Big Nose', volume: '33cl', categorie: 'bt'},
 			{id: 218, nom: 'Westmale', volume: '33cl', categorie: 'bt'},
@@ -791,7 +781,8 @@
 			{id: 230, nom: 'Capri-Sun Cherry 20cl', volume: '25cl', categorie: 'boissons-25cl'}
         ];
 
-		// Hell
+		// Bug Volume
+		// Hell, Cigarette, Chips, Chocolat, Bonbons, Feuille, Glaces, Pizza, Glaçons, Frites, Pochons, Colruyt divers
 		
         // Trier les boissons dans chaque catégorie alphabétiquement par nom
         function trierBoissons(boissons) {
