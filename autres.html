@@ -72,8 +72,8 @@
             margin-bottom: 10px;
         }
 
-        /* Bouton Ajouter */
-        .article .ajouter {
+        /* Boutons Ajouter et Supprimer */
+        .article .ajouter, .article .supprimer {
             background-color: #28a745;
             color: #fff;
             border: none;
@@ -84,8 +84,12 @@
             margin-top: 10px;
         }
 
-        .article .ajouter:hover {
+        .article .ajouter:hover, .article .supprimer:hover {
             background-color: #218838;
+        }
+
+        .article .supprimer {
+            background-color: #dc3545;
         }
 
         /* Étiquette de catégorie */
@@ -255,6 +259,7 @@
                 <span class="badge-categorie">${article.categorie}</span>
                 <h3>${article.nom}</h3>
                 <button class="ajouter">+1 Ajouter</button>
+                <button class="supprimer">-1 Supprimer</button>
                 <div class="badge-quantite" id="badge-${article.id}"></div>
             `;
             document.getElementById(categorie).appendChild(div);
@@ -262,6 +267,11 @@
             // Ajouter un écouteur d'événement au bouton "Ajouter"
             div.querySelector('.ajouter').addEventListener('click', () => {
                 mettreAJourCommande(article.id, article.nom, 1);
+            });
+
+            // Ajouter un écouteur d'événement au bouton "Supprimer"
+            div.querySelector('.supprimer').addEventListener('click', () => {
+                mettreAJourCommande(article.id, article.nom, -1);
             });
 
             // Mettre à jour l'affichage de la quantité dans le badge
