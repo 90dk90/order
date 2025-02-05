@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Menu des Boissons</title>
+    <style>
+        /* Réinitialisation des styles par défaut */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 2rem;
+        }
+
+        h2.categorie {
+            font-size: 1.8rem;
+            margin: 20px 0 10px;
+            color: #e67e22;
+            text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .boissons {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr); /* 3 colonnes par défaut */
+            gap: 20px; /* Espace entre les cadres */
+        }
+
+        .boisson::before {
+            content: "\1F964"; /* Nouvelle icône de verre à boire */
+            font-size: 2rem; /* Taille de l'icône augmentée */
+            display: block;
+            text-align: center;
+            margin-bottom: 10px;
+        }
+
+        .boisson {
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s ease;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: space-between;
+            position: relative;
+        }
+
+        .boisson:hover {
+            transform: scale(1.05);
+        }
+
+        .boisson h3 {
+            font-size: 1.5rem;
+            margin-bottom: 10px;
+        }
+
+        /* Bouton Ajouter */
+        .boisson .ajouter {
+            background-color: #28a745;
+            color: #fff;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1rem;
+            margin-top: 10px;
+        }
+
+        .boisson .ajouter:hover {
+            background-color: #218838;
+        }
+
+        /* Étiquette de volume */
+        .boisson .volume {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: #e67e22;
+            color: #fff;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 0.9rem;
+            font-weight: bold;
+        }
+
+        /* Panier */
+        .panier {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            cursor: pointer;
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .panier .badge {
+            background-color: red;
+            color: white;
+            border-radius: 50%;
+            padding: 5px 10px;
+            font-size: 0.8rem;
+        }
+
+        /* Popup de commande */
+        .popup {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            z-index: 1001;
+            width: 500px;
+            max-width: 90%;
+        }
+
+        .popup h2 {
+            font-size: 1.5rem;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+
+        .popup textarea {
+            width: 100%;
+            height: 150px;
+            padding: 10px;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+            resize: none;
+            font-family: Arial, sans-serif;
+            font-size: 1rem;
+        }
+
+        /* Popup actions */
+        .popup-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 15px;
+        }
+
+        /* Icône de suppression dans la zone de texte */
+        .popup textarea button {
+            background: none;
+            border: none;
+            color: red;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+        
+        .popup textarea button:hover {
+            color: darkred;
+        }
+
+
+        .overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .boissons {
+                grid-template-columns: repeat(3, 1fr); /* 3 colonnes pour les téléphones */
+                gap: 10px; /* Espace réduit entre les cadres */
+            }
+
+            .boisson {
+                padding: 15px; /* Réduire le padding pour les petits écrans */
+            }
+
+            .boisson h3 {
+                font-size: 1.2rem; /* Taille de police réduite */
+            }
+
+            .boisson .ajouter {
+                padding: 8px 16px; /* Bouton plus petit */
+                font-size: 0.9rem;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .boissons {
+                grid-template-columns: repeat(2, 1fr); /* 2 colonnes pour les très petits écrans */
+            }
+        }
+		
+		/* Barre de recherche */
+		.search-container {
+			text-align: center;
+			margin-bottom: 20px;
+		}
+
+		#search-bar {
+			width: 50%;
+			padding: 10px;
+			border: 1px solid #ccc;
+			border-radius: 5px;
+			font-size: 1rem;
+		}
+		
+		/* Badge vert pour afficher la quantité sélectionnée */
+		.badge-quantite {
+			position: absolute;
+			top: 5px;
+			left: 5px;
+			background-color: green;
+			color: white;
+			padding: 5px 8px;
+			border-radius: 50%;
+			font-size: 0.9rem;
+			font-weight: bold;
+			display: none;
+		}
+		
+		/* Bouton Supprimer */
+		.boisson .supprimer {
+			background-color: #dc3545; /* Rouge */
+			color: #fff;
+			border: none;
+			padding: 10px 20px;
+			border-radius: 5px;
+			cursor: pointer;
+			font-size: 1rem;
+			margin-top: 5px;
+		}
+
+		.boisson .supprimer:hover {
+			background-color: #c82333; /* Rouge plus foncé */
+		}
+
+		/* Vignette en haut à gauche avec le nombre de boissons sélectionnées */
+		.vignette-panier {
+			position: fixed;
+			top: 20px;
+			left: 20px;
+			background-color: #28a745; /* Vert */
+			color: white;
+			padding: 10px 15px;
+			border-radius: 50%;
+			font-size: 1.5rem;
+			font-weight: bold;
+			display: none; /* Par défaut cachée */
+		}
+
+		/* Badge pour afficher la quantité sélectionnée de chaque boisson */
+		.badge-quantite {
+			position: absolute;
+			top: 10px;
+			left: 10px;
+			background-color: #28a745; /* Vert */
+			color: white;
+			padding: 5px 10px;
+			border-radius: 50%;
+			font-size: 1rem;
+			font-weight: bold;
+			display: none; /* Caché par défaut */
+		}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Menu des Boissons Soft</h1>
+		
+		<!-- Barre de recherche -->
+		<div class="search-container">
+			<input type="text" id="search-bar" placeholder="Rechercher une boisson..." oninput="filtrerBoissons()">
+		</div>
+
+        <!-- Panier -->
+        <div class="panier" onclick="afficherPopup()">
+            <span>🛒</span>
+            <span class="badge" id="panier-badge">0</span>
+        </div>
+
+        <!-- Catégories -->
+        <h2 class="categorie"><span>🥤</span> Boissons Softs 25cl</h2>
+        <div class="boissons" id="boissons-25cl"></div>
+
+        <h2 class="categorie"><span>🥤</span> Boissons Softs 33cl</h2>
+        <div class="boissons" id="boissons-33cl"></div>
+
+        <h2 class="categorie"><span>🥤</span> Boissons Softs 50cl</h2>
+        <div class="boissons" id="boissons-50cl"></div>
+
+        <h2 class="categorie"><span>🥤</span> Boissons Softs 1.5L</h2>
+        <div class="boissons" id="boissons-1-5L"></div>
+		
+		<h2 class="categorie"><span>🥤</span> Bière Polonaise 50cl</h2>
+        <div class="boissons" id="pl"></div>
+		
+		<h2 class="categorie"><span>🥤</span> Bière belge 50cl/33cl</h2>
+        <div class="boissons" id="be"></div>
+		
+		<h2 class="categorie"><span>🥤</span> Flash d'alcool</h2>
+        <div class="boissons" id="fl"></div>
+		
+		<h2 class="categorie"><span>🥤</span> Bière en bouteille</h2>
+        <div class="boissons" id="bt"></div>
+
+        <!-- Popup -->
+		<div class="overlay" id="overlay"></div>
+		<div class="popup" id="popup">
+			<h2>Récapitulatif</h2>
+			<textarea id="commande-texte" readonly></textarea>
+			<div class="popup-actions">
+				<span class="copier" onclick="copierCommande()">📋</span>
+				<span class="vider-panier" onclick="viderPanier()">🗑️</span>
+			</div>
+		</div>
+
+    <script>
+		// Fonction pour afficher une boisson
+		function afficherBoisson(boisson, categorie) {
+			const div = document.createElement('div');
+			div.className = 'boisson';
+			div.setAttribute('data-id', boisson.id);
+			div.setAttribute('data-nom', boisson.nom);
+			div.setAttribute('data-volume', boisson.volume);
+			div.innerHTML = `
+				<span class="volume">${boisson.volume}</span>
+				<h3>${boisson.nom}</h3>
+				<button class="ajouter">+1 Ajouter</button>
+				<button class="supprimer">-1 Supprimer</button>
+				<div class="badge-quantite" id="badge-${boisson.id}"></div>
+			`;
+			document.getElementById(categorie).appendChild(div);
+
+			// Ajouter un écouteur d'événement au bouton "Ajouter"
+			div.querySelector('.ajouter').addEventListener('click', () => {
+				mettreAJourCommande(boisson.id, boisson.nom, boisson.volume, 1);
+			});
+
+			// Ajouter un écouteur d'événement au bouton "Supprimer"
+			div.querySelector('.supprimer').addEventListener('click', () => {
+				mettreAJourCommande(boisson.id, boisson.nom, boisson.volume, -1);
+			});
+
+			// Mettre à jour l'affichage de la quantité dans le badge
+			mettreAJourBadge(boisson.id);
+		}
+
+
+		// Fonction pour mettre à jour le badge de chaque boisson avec la quantité
+		function mettreAJourBadge(id) {
+			let commande = JSON.parse(localStorage.getItem('commande')) || {};
+			let boisson = commande[id];
+			const badge = document.getElementById(`badge-${id}`);
+
+			if (boisson && boisson.quantite > 0) {
+				badge.style.display = 'block'; // Afficher le badge
+				badge.textContent = boisson.quantite;
+			} else {
+				badge.style.display = 'none'; // Masquer le badge si la quantité est 0 ou moins
+			}
+		}
+
+
+			// Afficher la vignette avec le nombre total de boissons sélectionnées
+			function afficherVignettePanier() {
+				let commande = JSON.parse(localStorage.getItem('commande')) || {};
+				let totalArticles = Object.values(commande).reduce((acc, item) => acc + item.quantite, 0);
+				const vignette = document.getElementById('vignette-panier');
+
+				if (totalArticles > 0) {
+					vignette.style.display = 'block'; // Afficher la vignette si des articles sont sélectionnés
+					vignette.textContent = totalArticles;
+				} else {
+					vignette.style.display = 'none'; // Masquer la vignette si aucun article sélectionné
+				}
+			}
+
+			// Appeler mettreAJourBadge pour chaque boisson lors du chargement de la page
+			window.addEventListener('load', () => {
+				afficherBadgePanier(); // Afficher le badge du panier
+				afficherCommande(); // Afficher la commande dans la zone de texte
+
+				// Mettre à jour les badges de chaque boisson
+				let commande = JSON.parse(localStorage.getItem('commande')) || {};
+				for (let id in commande) {
+					mettreAJourBadge(id); // Mettre à jour le badge pour chaque boisson
+				}
+			});
+
+
+			// Fonction pour mettre à jour la commande dans le localStorage
+			function mettreAJourCommande(id, nom, volume, quantite) {
+				let commande = JSON.parse(localStorage.getItem('commande')) || {};
+
+				if (commande[id]) {
+					commande[id].quantite += quantite;
+
+					if (commande[id].quantite <= 0) {
+						delete commande[id]; // Supprimer l'entrée si la quantité est 0 ou moins
+					}
+				} else if (quantite > 0) {
+					commande[id] = { nom: nom, volume: volume, quantite: quantite };
+				}
+
+				// Sauvegarder la commande dans le localStorage
+				localStorage.setItem('commande', JSON.stringify(commande));
+
+				// Mettre à jour le badge du panier et l'affichage du récapitulatif
+				afficherBadgePanier();
+				afficherCommande();
+				afficherVignettePanier(); // Mettre à jour la vignette à chaque ajout/suppression
+				
+				// Mettre à jour le badge de la boisson spécifique
+				mettreAJourBadge(id);
+			}
+
+
+		
+		// Fonction pour mettre à jour le badge de chaque boisson avec la quantité
+		function mettreAJourBadge(id) {
+			let commande = JSON.parse(localStorage.getItem('commande')) || {};
+			const boisson = commande[id];
+			const badge = document.getElementById(`badge-${id}`);
+
+			if (boisson && boisson.quantite > 0) {
+				badge.style.display = 'block'; // Afficher le badge
+				badge.textContent = boisson.quantite;
+			} else {
+				badge.style.display = 'none'; // Masquer le badge si la quantité est 0 ou moins
+			}
+		}
+
+
+
+        // Fonction pour afficher le badge du panier
+        function afficherBadgePanier() {
+            let commande = JSON.parse(localStorage.getItem('commande')) || {};
+            let totalArticles = Object.values(commande).reduce((acc, item) => acc + item.quantite, 0);
+            document.getElementById('panier-badge').textContent = totalArticles;
+        }
+
+        // Fonction pour afficher la commande dans le popup
+		function afficherCommande() {
+			let commande = JSON.parse(localStorage.getItem('commande')) || {};
+			
+			if (Object.keys(commande).length === 0) {
+				document.getElementById('commande-texte').value = "Aucune boisson sélectionnée.";
+				return;
+			}
+
+			// Catégories de boissons et leur ordre d'affichage
+			const categories = {
+				"boissons-25cl": "Boissons 25cl",
+				"boissons-33cl": "Boissons 33cl",
+				"boissons-50cl": "Boissons 50cl",
+				"boissons-1-5L": "Boissons 1.5L",
+				"pl": "Bière Polonaise 50cl", 
+				"be": "Bière belge 50cl/33cl", 
+				"fl": "Flash d'Alcool", 
+				"bt": "Bière en bouteille"
+			};
+
+			// Regrouper les boissons par catégorie
+			let boissonsParCategorie = {};
+			for (let id in commande) {
+				let boisson = commande[id];
+				let categorie = Object.keys(categories).find(cat => boisson.volume.includes(cat.split('-')[1])) || "Autres Boissons";
+
+				if (!boissonsParCategorie[categorie]) {
+					boissonsParCategorie[categorie] = [];
+				}
+
+				boissonsParCategorie[categorie].push(`${boisson.quantite}x ${boisson.nom}, ${boisson.volume}`);
+			}
+
+			// Générer le texte formaté
+			let texteCommande = Object.keys(categories)
+				.filter(categorie => boissonsParCategorie[categorie]) // Ne garder que les catégories présentes
+				.map(categorie => `- ${categories[categorie]} -\n` + boissonsParCategorie[categorie].join("\n"))
+				.join("\n\n");
+
+			document.getElementById('commande-texte').value = texteCommande;
+		}
+
+
+
+        // Appeler afficherCommande au chargement de la page pour afficher les éléments dans la zone de texte
+        window.addEventListener('load', () => {
+            afficherBadgePanier(); // Afficher le badge du panier
+            afficherCommande(); // Afficher la commande dans la zone de texte
+        });
+
+
+        // Fonction pour afficher le popup
+        function afficherPopup() {
+            document.getElementById('popup').style.display = 'block';
+            document.getElementById('overlay').style.display = 'block';
+        }
+
+        // Fonction pour copier la commande
+        function copierCommande() {
+            let texte = document.getElementById('commande-texte').value;
+            navigator.clipboard.writeText(texte).then(() => {
+                alert('Commande copiée !');
+            });
+        }
+
+        // Fonction pour vider le panier
+        function viderPanier() {
+            localStorage.removeItem('commande');
+            afficherBadgePanier();
+            afficherCommande();
+        }
+
+        // Fonction pour fermer le popup (en cliquant en dehors)
+        document.getElementById('overlay').addEventListener('click', () => {
+            document.getElementById('popup').style.display = 'none';
+            document.getElementById('overlay').style.display = 'none';
+        });
+
+        // Données des boissons (ajout d'exemples supplémentaires)
+        const boissons = [
+            // 25cl
+            {id: 1, nom: 'Golden power', volume: '25cl', categorie: 'boissons-25cl'},
+            {id: 2, nom: 'Rodeo', volume: '25cl', categorie: 'boissons-25cl'},
+            {id: 3, nom: 'Cécémel', volume: '25cl', categorie: 'boissons-25cl'},
+            {id: 4, nom: 'Fristi', volume: '25cl', categorie: 'boissons-25cl'},
+            {id: 5, nom: 'Hawai', volume: '25cl', categorie: 'boissons-25cl'},
+            {id: 6, nom: 'Pom\'s', volume: '25cl', categorie: 'boissons-25cl'},
+            {id: 7, nom: 'Hell Ice coffee Latte', volume: '25cl', categorie: 'boissons-25cl'},
+            {id: 8, nom: 'Hell Ice coffee Capuccino', volume: '25cl', categorie: 'boissons-25cl'},
+
+            // 33cl
+            {id: 9, nom: 'Coca-cola Light', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 10, nom: 'Coca-cola Cherry', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 11, nom: 'Coca-cola Vanille', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 12, nom: 'Coca-cola', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 13, nom: 'Pepsi', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 14, nom: 'Pepsi Light', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 15, nom: 'Sprite', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 16, nom: 'Uludag', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 17, nom: 'Fanta Lemon', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 18, nom: 'Fanta Cassis', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 19, nom: 'Fanta Exotic', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 20, nom: 'Fanta Orange', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 21, nom: 'Oasis Pomme-poire', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 22, nom: 'Oasis Tropical', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 23, nom: 'Oasis Fraise framboise', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 24, nom: 'Oasis Ice tea', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 25, nom: 'Oasis Pomme-cassis', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 26, nom: 'Tropico Orange Ananas', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 27, nom: 'Tropico Tropical', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 28, nom: 'Tropico Fraise-Kiwi', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 29, nom: 'Schweppes Tonic', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 30, nom: 'Schweppes Lemon', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 31, nom: 'Schweppes Mojito', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 32, nom: 'Schweppes Agrum', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 33, nom: 'Lipton Framboise', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 34, nom: 'Lipton Pastèque Menthe', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 35, nom: 'Lipton Pêche', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 36, nom: 'Lipton Pétillant', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 37, nom: 'Orangina Orange', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 38, nom: 'Minute-Maid Multifruit', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 39, nom: 'Minute-Maid Pomme', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 40, nom: 'Minute-Maid Multivitamines', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 41, nom: 'Ginger beer', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 42, nom: 'Vimto', volume: '33cl', categorie: 'boissons-33cl'},
+            {id: 43, nom: 'Mogu-Mogu Ananas', volume: '32cl', categorie: 'boissons-33cl'},
+            {id: 44, nom: 'Mogu-Mogu Bubblegum', volume: '32cl', categorie: 'boissons-33cl'},
+            {id: 45, nom: 'Mogu-Mogu Litchi', volume: '32cl', categorie: 'boissons-33cl'},
+            {id: 46, nom: 'Mogu-Mogu Melon', volume: '32cl', categorie: 'boissons-33cl'},
+            {id: 47, nom: 'Mogu-Mogu Fraise', volume: '32cl', categorie: 'boissons-33cl'},
+            {id: 48, nom: 'Mogu-Mogu Blueberry', volume: '32cl', categorie: 'boissons-33cl'},
+            {id: 49, nom: 'Mogu-Mogu Coconut', volume: '32cl', categorie: 'boissons-33cl'},
+            {id: 50, nom: 'Mogu-Mogu Abricot', volume: '32cl', categorie: 'boissons-33cl'},
+
+            // 50cl
+            {id: 51, nom: 'Fanta Orange', volume: '50cl', categorie: 'boissons-50cl'},
+            {id: 52, nom: 'Coca-cola Light', volume: '50cl', categorie: 'boissons-50cl'},
+            {id: 53, nom: 'Sprite', volume: '50cl', categorie: 'boissons-50cl'},
+            {id: 54, nom: 'Cristalline Pêche', volume: '50cl', categorie: 'boissons-50cl'},
+            {id: 55, nom: 'Cristalline Citron', volume: '50cl', categorie: 'boissons-50cl'},
+            {id: 56, nom: 'Cristalline Fraise', volume: '50cl', categorie: 'boissons-50cl'},
+            {id: 57, nom: 'Cristalline Tropical', volume: '50cl', categorie: 'boissons-50cl'},
+            {id: 58, nom: 'Lipton pêche', volume: '50cl', categorie: 'boissons-50cl'},
+            {id: 59, nom: 'Lipton pétillant', volume: '50cl', categorie: 'boissons-50cl'},
+            {id: 60, nom: 'Lipton green', volume: '50cl', categorie: 'boissons-50cl'},
+            {id: 61, nom: 'Lipton Framboise', volume: '50cl', categorie: 'boissons-50cl'},
+            {id: 62, nom: 'Lipton Pastèque Menthe', volume: '50cl', categorie: 'boissons-50cl'},
+            {id: 63, nom: 'Coca-cola', volume: '50cl', categorie: 'boissons-50cl'},
+
+            // 1.5L
+            {id: 64, nom: 'Sprite', volume: '1.5L', categorie: 'boissons-1-5L'},
+            {id: 65, nom: '7Up', volume: '1.5L', categorie: 'boissons-1-5L'},
+            {id: 66, nom: 'Fanta Exotic', volume: '1.5L', categorie: 'boissons-1-5L'},
+            {id: 67, nom: 'Fanta Orange', volume: '1.5L', categorie: 'boissons-1-5L'},
+            {id: 68, nom: 'Fanta Lemon', volume: '1.5L', categorie: 'boissons-1-5L'},
+            {id: 69, nom: 'Lipton pétillant', volume: '1.5L', categorie: 'boissons-1-5L'},
+            {id: 70, nom: 'Lipton pêche', volume: '1.5L', categorie: 'boissons-1-5L'},
+            {id: 71, nom: 'Lipton Green', volume: '1.5L', categorie: 'boissons-1-5L'},
+            {id: 72, nom: 'Pepsi', volume: '1.5L', categorie: 'boissons-1-5L'},
+            {id: 73, nom: 'Pepsi Light', volume: '1.5L', categorie: 'boissons-1-5L'},
+			{id: 74, "nom": "Tropico tropical", "volume": "1.5L", "categorie": "boissons-1-5L"},
+			{id: 75, "nom": "Schweppes Agrum", "volume": "1.5L", "categorie": "boissons-1-5L"},
+			{id: 76, "nom": "Schweppes Lemon", "volume": "1.5L", "categorie": "boissons-1-5L"},
+			{id: 77, "nom": "Schweppes Tonic", "volume": "1.5L", "categorie": "boissons-1-5L"},
+			{id: 78, "nom": "Boni Grenadine", "volume": "1.5L", "categorie": "boissons-1-5L"},
+			{id: 79, "nom": "Oasis Pomme cassis", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 80, "nom": "Oasis Tropical", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 81, "nom": "Oasis Ice Tea", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 82, "nom": "Oasis Poire", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 83, "nom": "Aquarius Rouge", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 84, "nom": "Aquarius Bleu", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 85, "nom": "Aquarius Orange", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 86, "nom": "Aquarius Lemon", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 87, "nom": "Aquarius Passion", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 88, "nom": "S.Pellegrino", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 89, "nom": "Perrier", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 90, "nom": "Spa Pétillant", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 91, "nom": "Spa", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 92, "nom": "Monster Noire", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 93, "nom": "Monster Vert", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 117, "nom": "Monster Bleu", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 118, "nom": "Monster Blanc", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 119, "nom": "Monster Rose", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 120, "nom": "Monster Orange", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 121, "nom": "Monster Bad Apple", "volume": "50cl", "categorie": "boissons-50cl"},
+			{id: 94, "nom": "AA Orange", "volume": "33cl", "categorie": "boissons-33cl"},
+			{id: 95, "nom": "AA Rouge", "volume": "33cl", "categorie": "boissons-33cl"},
+			{id: 96, "nom": "Turk Kizilay", "volume": "20cl", "categorie": "boissons-25cl"},
+			{id: 97, "nom": "Redbull Coco", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 98, "nom": "Redbull Seftali", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 99, "nom": "Redbull Abricot", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 100, "nom": "Redbull Cactus", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 101, "nom": "Redbull Pastèque", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 102, "nom": "Redbull Cannelle", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 103, "nom": "Redbull Tropical", "volume": "25cl", "categorie": "boissons-25cl"},
+	        {id: 104, "nom": "Redbull Juneberry", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 105, "nom": "Redbull Myrtille", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 106, "nom": "Redbull Light", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 107, "nom": "Redbull", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 108, "nom": "Redbull Mûre givrée", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 109, "nom": "Redbull Cotton Candy", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 110, "nom": "Redbull Gummy Bear", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 111, "nom": "Redbull Curuba", "volume": "25cl", "categorie": "boissons-25cl"},
+		    {id: 112, "nom": "Redbull Mauve", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 113, "nom": "Redbull Rose", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 114, "nom": "Nalu Jaune", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 115, "nom": "Nalu Rouge (Melon)", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 116, "nom": "Nalu Blanc (Frost)", "volume": "25cl", "categorie": "boissons-25cl"},
+			{id: 122, "nom": "S.Pellegrino", "volume": "1.5L", "categorie": "boissons-1-5L"},
+			{id: 123, "nom": "Perrier", "volume": "1.5L", "categorie": "boissons-1-5L"},
+			{id: 124, "nom": "Everyday Jus de pomme", "volume": "1L", "categorie": "boissons-1-5L"},
+			{id: 125, "nom": "Everyday Jus de d'orange", "volume": "1L", "categorie": "boissons-1-5L"},
+			{id: 126, "nom": "Everyday Multifruit", "volume": "1L", "categorie": "boissons-1-5L"},
+			{id: 127, "nom": "Everyday Jus d'Ananas", "volume": "1L", "categorie": "boissons-1-5L"},
+			{id: 128, "nom": "Pack de Spa", "volume": "1,5L", "categorie": "boissons-1-5L"},
+			{id: 129, "nom": "Pack de Evian", "volume": "1,5L", "categorie": "boissons-1-5L"},
+			{id: 130, "nom": "Pack de Spa Petillant", "volume": "1,5L", "categorie": "boissons-1-5L"},
+			{id: 131, "nom": "Pack de Montagne", "volume": "1,5L", "categorie": "boissons-1-5L"},
+			{id: 132, "nom": "Pack de Cristalline", "volume": "1,5L", "categorie": "boissons-1-5L"},
+			{id: 133, "nom": "Pack de Coca-Cola 1,5L", "volume": "1,5L", "categorie": "boissons-1-5L"},
+			{id: 134, "nom": "Pack de Coca-Cola Light 1,5L", "volume": "1,5L", "categorie": "boissons-1-5L"},
+			{id: 135, "nom": "Pack de Pom's 1,5L", "volume": "1,5L", "categorie": "boissons-1-5L"},
+			{id: 136, "nom": "Pack de Hawai Tropical 1,5L", "volume": "1,5L", "categorie": "boissons-1-5L"},
+			{id: 137, "nom": "Pack de Hawai Orange 1,5L", "volume": "1,5L", "categorie": "boissons-1-5L"},
+			{id: 138, "nom": "Pack de Hawai Caraibe 1,5L", "volume": "1,5L", "categorie": "boissons-1-5L"},
+			{id: 139, "nom": "Pack de Hawai Fraise 1,5L", "volume": "1,5L", "categorie": "boissons-1-5L"},
+			{id: 140, "nom": "Pack de Orangina Orange 1,5L", "volume": "1,5L", "categorie": "boissons-1-5L"},
+			{id: 141, "nom": "Pack de Oasis Cassis 2L", "volume": "2L", "categorie": "boissons-1-5L"},
+			{id: 142, "nom": "Pack de Oasis Fraise 2L", "volume": "2L", "categorie": "boissons-1-5L"},
+			{id: 143, "nom": "Pack de Oasis Tropical 2L", "volume": "2L", "categorie": "boissons-1-5L"},
+			{id: 144, "nom": "Pack de Bière Lech", "volume": "50cl", "categorie": "pl"},
+			{id: 145, "nom": "Pack de Bière Perla Mildowa", "volume": "50cl", "categorie": "pl"},
+			{id: 146, "nom": "Pack de Bière Karpackie", "volume": "50cl", "categorie": "pl"},
+			{id: 147, "nom": "Pack de Bière Tyskie", "volume": "50cl", "categorie": "pl"},
+			{id: 148, "nom": "Pack de Bière Zywie", "volume": "50cl", "categorie": "pl"},
+			{id: 149, "nom": "Pack de Bière Perla Chmielowa", "volume": "50cl", "categorie": "pl"},
+			{id: 150, "nom": "Pack de Bière Debowe", "volume": "50cl", "categorie": "pl"},
+			{id: 151, "nom": "Pack de Bière Warka Strong", "volume": "50cl", "categorie": "pl"},
+			{id: 152, "nom": "Pack de Bière Warka Classic", "volume": "50cl", "categorie": "pl"},
+			{id: 153, "nom": "Pack de Bière Zubr", "volume": "50cl", "categorie": "pl"},
+			{id: 154, nom: 'Pack de Cécémel 1,5L', volume: '1.5L', categorie: 'boissons-1-5L'},
+			{id: 155, nom: 'Flash Bombay Gin Tonic 25cl', volume: '25cl', categorie: 'fl'},
+			{id: 156, nom: 'Flash Bacardi Cola 25cl', volume: '25cl', categorie: 'fl'},
+			{id: 157, nom: 'Flash Captain Morgan Cola 25cl', volume: '25cl', categorie: 'fl'},
+			{id: 158, nom: 'Flash Eristoff red 33cl', volume: '33cl', categorie: 'fl'},
+			{id: 159, nom: 'Flash William Lawsons 33cl', volume: '33cl', categorie: 'fl'},
+			{id: 160, nom: 'Flash Jack cola 33cl', volume: '33cl', categorie: 'fl'},
+			{id: 161, nom: 'Flash William Lawsons 25cl', volume: '25cl', categorie: 'fl'},
+			{id: 162, nom: 'Flash JB 25cl', volume: '25cl', categorie: 'fl'},
+			{id: 163, nom: 'Flash Eristoff blue 25cl', volume: '25cl', categorie: 'fl'},
+			{id: 164, nom: 'Flash Eristoff red 25cl', volume: '25cl', categorie: 'fl'},
+			{id: 165, nom: 'Jupiler', volume: '33cl', categorie: 'be'},
+			{id: 166, nom: 'Jupiler Pack', volume: '33cl', categorie: 'be'},
+			{id: 167, nom: 'Jupiler', volume: '50cl', categorie: 'be'},
+			{id: 168, nom: 'Jupiler Pack', volume: '50cl', categorie: 'be'},
+			{id: 169, nom: 'Maes', volume: '33cl', categorie: 'be'},
+			{id: 170, nom: 'Carapils', volume: '33cl', categorie: 'be'},
+			{id: 171, nom: 'Jupiler 0% 33cl', volume: '33cl', categorie: 'be'},
+			{id: 172, nom: 'Stella Artois', volume: '33cl', categorie: 'be'},
+			{id: 173, nom: 'Hoegaarden blanche', volume: '33cl', categorie: 'be'},
+			{id: 174, nom: 'Heineken', volume: '50cl', categorie: 'be'},
+			{id: 175, nom: 'Carlsberg', volume: '50cl', categorie: 'be'},
+			{id: 176, nom: 'Maes', volume: '50cl', categorie: 'be'},
+			{id: 177, nom: 'Stella Artois', volume: '50cl', categorie: 'be'},
+			{id: 178, nom: 'Carapils', volume: '50cl', categorie: 'be'},
+			{id: 179, nom: 'Gluck', volume: '50cl', categorie: 'be'},
+			{id: 180, nom: 'Desperados Red', volume: '50cl', categorie: 'be'},
+			{id: 181, nom: 'Desperados Mojito', volume: '50cl', categorie: 'be'},
+			{id: 182, nom: 'Desperados Original', volume: '50cl', categorie: 'be'},
+			{id: 183, nom: 'Gordon Pêche', volume: '50cl', categorie: 'be'},
+			{id: 184, nom: 'Gordon Watermelon', volume: '50cl', categorie: 'be'},
+			{id: 185, nom: 'Kasteel Rouge', volume: '50cl', categorie: 'be'},
+			{id: 186, nom: 'Gordon Rouge', volume: '50cl', categorie: 'be'},
+			{id: 187, nom: 'Gordon Bleu', volume: '50cl', categorie: 'be'},
+			{id: 188, nom: 'Gordon Gold', volume: '50cl', categorie: 'be'},
+			{id: 189, nom: 'Gordon Platinium', volume: '50cl', categorie: 'be'},
+			{id: 190, nom: 'Gordon Nickel', volume: '50cl', categorie: 'be'},
+			{id: 191, nom: 'Gordon Tequilla', volume: '50cl', categorie: 'be'},
+			{id: 192, nom: 'Leffe brune', volume: '50cl', categorie: 'be'},
+			{id: 193, nom: 'Leffe blonde', volume: '50cl', categorie: 'be'},
+			{id: 194, nom: 'Chouffe Cherry', volume: '33cl', categorie: 'bt'},
+			{id: 195, nom: 'Chouffe', volume: '33cl', categorie: 'bt'},
+			{id: 196, nom: 'Duvel', volume: '33cl', categorie: 'bt'},
+			{id: 197, nom: 'Vedett Orange', volume: '33cl', categorie: 'bt'},
+			{id: 198, nom: 'Vedett Rouge', volume: '33cl', categorie: 'bt'},
+			{id: 199, nom: 'Chimay Bleu', volume: '33cl', categorie: 'bt'},
+			{id: 200, nom: 'Chimay blanche', volume: '33cl', categorie: 'bt'},
+			{id: 201, nom: 'De Ranke XX Bitter', volume: '33cl', categorie: 'bt'},
+			{id: 202, nom: 'De Ranke Guldenberg', volume: '33cl', categorie: 'bt'},
+			{id: 203, nom: 'Seine Tripel Anvers', volume: '33cl', categorie: 'bt'},
+			{id: 204, nom: 'Seine Zenne Pils', volume: '33cl', categorie: 'bt'},
+			{id: 205, nom: 'Seine Bruxellenins', volume: '33cl', categorie: 'bt'},
+			{id: 206, nom: 'Seine Jambe de bois', volume: '33cl', categorie: 'bt'},
+			{id: 207, nom: 'Taras Boulba', volume: '33cl', categorie: 'bt'},
+			{id: 208, nom: 'BBP Babylone', volume: '33cl', categorie: 'bt'},
+			{id: 209, nom: 'BBP Jungle Joy', volume: '33cl', categorie: 'bt'},
+			{id: 210, nom: 'BBP Lazy Panda', volume: '33cl', categorie: 'bt'},
+			{id: 211, nom: 'BBP Delta', volume: '33cl', categorie: 'bt'},
+			{id: 212, nom: 'Seine Zinnebier', volume: '33cl', categorie: 'bt'},
+			{id: 213, nom: 'BBP Juyce Junkie', volume: '33cl', categorie: 'bt'},
+			{id: 214, nom: 'BBP Terra Pils', volume: '33cl', categorie: 'bt'},
+			{id: 215, nom: 'Triple Bertha', volume: '33cl', categorie: 'bt'},
+			{id: 216, nom: 'Orval', volume: '33cl', categorie: 'bt'},
+			{id: 217, nom: 'Big Nose', volume: '33cl', categorie: 'bt'},
+			{id: 218, nom: 'Westmale', volume: '33cl', categorie: 'bt'},
+			{id: 219, nom: 'Triple Karmeliet', volume: '33cl', categorie: 'bt'},
+			{id: 220, nom: 'Guiness', volume: '33cl', categorie: 'bt'},
+			{id: 221, nom: 'Lindermans Kriek', volume: '33cl', categorie: 'bt'},
+			{id: 222, nom: 'Lindermans Pêcheresse', volume: '33cl', categorie: 'bt'},
+			{id: 223, nom: 'Heineken bouteille', volume: '33cl', categorie: 'bt'},
+			{id: 224, nom: 'Jupiler bouteille', volume: '33cl', categorie: 'bt'}
+        ];
+
+		// Capri-Sun, Hell Bière en bouteille
+		
+        // Trier les boissons dans chaque catégorie alphabétiquement par nom
+        function trierBoissons(boissons) {
+            return boissons.sort((a, b) => a.nom.localeCompare(b.nom));
+        }
+
+        // Afficher les boissons dans leur catégorie
+        trierBoissons(boissons).forEach(boisson => afficherBoisson(boisson, boisson.categorie));
+
+        // Afficher le badge du panier au chargement de la page
+        afficherBadgePanier();
+		
+		// Fonction pour filtrer les boissons en fonction du texte entré dans la barre de recherche
+		function filtrerBoissons() {
+			let recherche = document.getElementById('search-bar').value.toLowerCase();
+			let boissons = document.querySelectorAll('.boisson');
+
+			boissons.forEach(boisson => {
+				let nom = boisson.getAttribute('data-nom').toLowerCase();
+				let volume = boisson.getAttribute('data-volume').toLowerCase();
+
+				if (nom.includes(recherche) || volume.includes(recherche)) {
+					boisson.style.display = "flex"; // Afficher la boisson
+				} else {
+					boisson.style.display = "none"; // Cacher la boisson
+				}
+			});
+		}
+    </script>
+</body>
+</html>
