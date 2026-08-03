@@ -14,13 +14,13 @@ Where that advice is **right for you**:
 Where to **ignore / nuance**:
 - “Don’t use VPP for GRE+BGP on Ryzen” - true for a light router; **false** once you push multi-G through a Linux PPPoE hairpin.
 - “PBO/Precision Boost Off entirely” - **PBO Off**, but stock turbo/CPB On + `performance` governor is fine for throughput. Deep C-states Off in BIOS.
-- Native VPP PPPoE client is **not** in 26.06 (BRAS plugin only). Ceiling until that exists (or Digi IPoE): softpath tune + eventually pppoeclient.
+- Native Digi PPPoE via Hi-Jiajun `pppoeclient` is **live** (`VPP_PPPOE_MODE=native`). No Linux `pppd` / `tap20` hairpin. See `PPPOE-NATIVE.md`.
 
-## Live layout (frozen - do not bounce PPP)
+## Live layout (native - do not bounce Digi)
 
 | Role | CPUs |
 |------|------|
-| Linux / `pppd` / Bird / RPS | 0-1 |
+| Linux / Bird / RPS | 0-1 |
 | VPP main | 0 |
 | VPP workers | 2-5 |
 
@@ -29,7 +29,8 @@ Where to **ignore / nuance**:
 | TAP/DPDK rings | 4096 |
 | Queues | 4 |
 | GRE MTU / MSS | 1448 / 1408 |
-| VTEP (ask Infrawire) | `2a01:4700:8086:be00::2` |
+| Digi | VPP `pppoeclient` → `digi` |
+| VTEP (ask Infrawire) | `cat /run/infrawire-vtep.txt` (Digi WAN IPv6 `2a01:4700:80ff:ffff::…`) |
 
 ## BIOS checklist (next physical visit)
 

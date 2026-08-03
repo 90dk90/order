@@ -2,40 +2,75 @@
 set -eu
 VPP="/usr/bin/vppctl -s /run/vpp/cli.sock"
 
-# Digi PD can change across PPPoE sessions. Always follow the live PD env.
-if [ -r /run/vpp-tap30-ipv6.env ]; then
+MODE=linux
+if [ -r /etc/default/vpp-pppoe-mode ]; then
   # shellcheck disable=SC1091
-  . /run/vpp-tap30-ipv6.env
+  . /etc/default/vpp-pppoe-mode
+  MODE="${VPP_PPPOE_MODE:-linux}"
 fi
 
-SRC_VTEP="${VXLAN_LOCAL_IP6:-2a01:4700:8080:6400::2}"
-UNDERLAY_GW="${VXLAN_UNDERLAY_GW:-2a01:4700:8080:6400::1}"
 DST_VTEP=2a10:4646:500::1
-UNDERLAY_IF=tap30
 LOCAL_IP=172.16.206.2/30
 PEER_IP=172.16.206.1
 HOST_IF=vpp-gre-infra
 PBR_TABLE=81
 PBR_SOURCE=79.172.242.0
 
-# Publish endpoint for Infrawire ops (do not bounce PPP to "refresh" this)
+# Prefer live Digi WAN IPv6 observed by pppoeclient (native mode).
+SRC_VTEP=""
+UNDERLAY_GW=""
+UNDERLAY_IF=""
+if [ "$MODE" = "native" ]; then
+  DETAIL=$($VPP show pppoe client detail 2>/dev/null || true)
+  OBS=$(printf '%s\n' "$DETAIL" | sed -n 's/.*wan-ipv6 observed \([^ ]*\).*/\1/p' | tr -d '\r' | head -1)
+  case "$OBS" in
+    */*)
+      SRC_VTEP=${OBS%/*}
+      UNDERLAY_IF=digi
+      UNDERLAY_GW=fe80::1
+      ;;
+  esac
+fi
+
+# Fallback: classic tap30 PD env (linux softpath / delegated /56)
+if [ -z "$SRC_VTEP" ] && [ -r /run/vpp-tap30-ipv6.env ]; then
+  # shellcheck disable=SC1091
+  . /run/vpp-tap30-ipv6.env
+  SRC_VTEP="${VXLAN_LOCAL_IP6:-}"
+  UNDERLAY_GW="${VXLAN_UNDERLAY_GW:-}"
+  UNDERLAY_IF=tap30
+fi
+
+SRC_VTEP="${SRC_VTEP:-2a01:4700:8080:6400::2}"
+UNDERLAY_GW="${UNDERLAY_GW:-2a01:4700:8080:6400::1}"
+UNDERLAY_IF="${UNDERLAY_IF:-tap30}"
+
 umask 022
 printf '%s\n' "$SRC_VTEP" > /run/infrawire-vtep.txt
-printf 'SRC_VTEP=%s\nDST_VTEP=%s\nUNDERLAY_GW=%s\nGRE_LOCAL=%s\nGRE_PEER=%s\n' \
-  "$SRC_VTEP" "$DST_VTEP" "$UNDERLAY_GW" "$LOCAL_IP" "$PEER_IP" \
+printf 'SRC_VTEP=%s\nDST_VTEP=%s\nUNDERLAY_GW=%s\nUNDERLAY_IF=%s\nGRE_LOCAL=%s\nGRE_PEER=%s\n' \
+  "$SRC_VTEP" "$DST_VTEP" "$UNDERLAY_GW" "$UNDERLAY_IF" "$LOCAL_IP" "$PEER_IP" \
   > /run/infrawire-endpoint.env
 
-# Static ND for Linux peer on tap30 (required after tap recreate)
-HOST_MAC=$(cat /sys/class/net/vpp6-host/address 2>/dev/null || true)
-if [ -n "$HOST_MAC" ]; then
-  $VPP set ip neighbor tap30 "$UNDERLAY_GW" "$HOST_MAC" static >/dev/null 2>&1 || true
+# Keep env file consumable by older helpers
+printf 'VXLAN_LOCAL_IP6=%s\nVPP_UNDERLAY_PREFIX=\nVXLAN_UNDERLAY_PREFIX=\nVXLAN_UNDERLAY_GW=%s\n' \
+  "$SRC_VTEP" "$UNDERLAY_GW" > /run/vpp-tap30-ipv6.env
+
+if [ "$UNDERLAY_IF" = "tap30" ]; then
+  HOST_MAC=$(cat /sys/class/net/vpp6-host/address 2>/dev/null || true)
+  if [ -n "$HOST_MAC" ]; then
+    $VPP set ip neighbor tap30 "$UNDERLAY_GW" "$HOST_MAC" static >/dev/null 2>&1 || true
+  fi
 fi
 
 # Underlay route to Infrawire VTEP
 $VPP ip route del "$DST_VTEP/128" 2>/dev/null || true
-$VPP ip route add "$DST_VTEP/128" via "$UNDERLAY_GW" "$UNDERLAY_IF" resolve-via-host
+if [ "$UNDERLAY_IF" = "digi" ]; then
+  $VPP ip route add "$DST_VTEP/128" via "$UNDERLAY_GW" "$UNDERLAY_IF"
+else
+  $VPP ip route add "$DST_VTEP/128" via "$UNDERLAY_GW" "$UNDERLAY_IF" resolve-via-host
+fi
 
-# Recreate GRE when missing or when Digi PD (src) changed
+# Recreate GRE when missing or when Digi endpoint (src) changed
 NEED_GRE=1
 CUR="$($VPP show gre tunnel 2>/dev/null | head -1 || true)"
 if [ -n "$CUR" ]; then
@@ -57,25 +92,20 @@ $VPP set interface mtu packet 1448 gre0
 $VPP set interface ip address del gre0 all || true
 $VPP set interface ip address gre0 "$LOCAL_IP"
 
-# LCP tun for BIRD (tap-type LCP fails on GRE with -73)
 if ! $VPP show lcp 2>/dev/null | grep -q "[[:space:]]$HOST_IF\\>"; then
   $VPP lcp create gre0 host-if "$HOST_IF" tun >/dev/null 2>&1 || true
 fi
 
 $VPP ip table add "$PBR_TABLE" 2>/dev/null || true
-
-# Keep client LAN on-link inside PBR table 81
 $VPP ip route del 79.172.242.0/24 table "$PBR_TABLE" 2>/dev/null || true
 $VPP ip route add 79.172.242.0/24 table "$PBR_TABLE" via loop10
 $VPP ip route del 79.172.242.1/32 table "$PBR_TABLE" 2>/dev/null || true
 $VPP ip route add 79.172.242.1/32 table "$PBR_TABLE" via local
 
-# Remove stale L3XC to dead loop11 (old VXLAN2 path)
 for iface in loop10 x520lan x520extra0 x520extra1; do
   $VPP l3xc del "$iface" via 10.81.81.1 loop11 2>/dev/null || true
 done
 
-# Default route: GRE unless Digi SNAT fallback flag is set
 if [ -e /run/vpp-prefer-digi-snat ]; then
   :
 else
@@ -87,7 +117,6 @@ else
   $VPP ip route add 0.0.0.0/0 via "$PEER_IP" gre0
 fi
 
-# Client src PBR classify DISABLED
 IDX=""
 if [ -r /run/vpp-vxlan2-pbr-classify-index ]; then
   IDX=$(cat /run/vpp-vxlan2-pbr-classify-index)

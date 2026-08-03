@@ -13,23 +13,36 @@ PEER_IP=172.16.206.1
 HOST_IF=vpp-gre-infra
 UNDERLAY_HOST=vpp6-host
 
+MODE=linux
+if [ -r /etc/default/vpp-pppoe-mode ]; then
+  # shellcheck disable=SC1091
+  . /etc/default/vpp-pppoe-mode
+  MODE="${VPP_PPPOE_MODE:-linux}"
+fi
+
+# Digi underlay host iface: native VPP PPPoE uses LCP vpp-digi; classic uses ppp0
+if [ "$MODE" = "native" ]; then
+  DIGI_HOST_IF=vpp-digi
+else
+  DIGI_HOST_IF=ppp0
+fi
+
 for i in $(seq 1 60); do
-  ip link show ppp0 >/dev/null 2>&1 && break
+  ip link show "$DIGI_HOST_IF" >/dev/null 2>&1 && break
   sleep 1
 done
 
-# Critical: VTEP must NOT be local on ppp0, or GRE returns never reach VPP.
-# Digi PPP keeps its own 80ff:ffff address; we only forward ::2 into VPP.
-ip -6 addr del "$SRC_VTEP/128" dev ppp0 2>/dev/null || true
+# Critical: VTEP must NOT be local on Digi host iface, or GRE returns never reach VPP.
+ip -6 addr del "$SRC_VTEP/128" dev "$DIGI_HOST_IF" 2>/dev/null || true
 ip -6 route replace "$SRC_VTEP/128" dev "$UNDERLAY_HOST" metric 1
-ip -6 route replace "$DST_VTEP/128" dev ppp0 metric 5
+ip -6 route replace "$DST_VTEP/128" dev "$DIGI_HOST_IF" metric 5 2>/dev/null || true
 
 # Remove legacy Linux GRE if present (conflicts with VPP gre0)
 ip link del gre-infra 2>/dev/null || true
 
 sysctl -w net.ipv4.ip_forward=1 >/dev/null
 sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null
-sysctl -w net.ipv6.conf.ppp0.forwarding=1 >/dev/null
+sysctl -w net.ipv6.conf."$DIGI_HOST_IF".forwarding=1 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf."$UNDERLAY_HOST".forwarding=1 >/dev/null
 sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null
 sysctl -w net.ipv4.conf.default.rp_filter=0 >/dev/null
