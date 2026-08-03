@@ -115,6 +115,9 @@ $VPP ip route add 79.172.242.1/32 table "$PBR_TABLE" via local
 # Return path: gre0 is in fib0 — must reach LAN even though loop10 lives in table 81
 $VPP ip route del 79.172.242.0/24 2>/dev/null || true
 $VPP ip route add 79.172.242.0/24 via loop10
+# Gateway .1 must be received in table 81 (ICMP/TCP to the GW from WAN)
+$VPP ip route del 79.172.242.1/32 2>/dev/null || true
+$VPP ip route add 79.172.242.1/32 via ip4-lookup-in-table "$PBR_TABLE"
 
 for iface in loop10 x520lan x520extra0 x520extra1; do
   $VPP l3xc del "$iface" via 10.81.81.1 loop11 2>/dev/null || true
