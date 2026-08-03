@@ -16,7 +16,7 @@ Always pick the Digi **`80ff`** underlay address — Digi also installs a second
 | PD VPS `77.90.4.48` | BGP AS219084 + GRE hub + forward `/24` |
 | PVE `79.172.242.2` | BBR+fq, MSS 1408, rings 8192 |
 
-Infrawire GRE/BGP stays disabled (`/run/infrawire-gre-cut.flag`).
+Infrawire has been **removed** from the Digi router (scripts, systemd unit, Bird peer, cut flags).
 
 ## Optional VPP dataplane opts (`router/debian-vpp/startup.conf`)
 | Knob | Live value | Note |

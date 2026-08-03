@@ -24,12 +24,10 @@ done
 [ -n "$SRC" ] || { echo "pd-gre: no Digi 80ff IPv6 yet"; exit 1; }
 
 OLD=$(cat /run/pd-vtep-live.txt 2>/dev/null || true)
-printf '%s\n' "$SRC" > /run/infrawire-vtep.txt
 printf '%s\n' "$SRC" > /run/pd-vtep-live.txt
 printf 'SRC_VTEP=%s\nDST_VTEP=%s\nINNER_LOCAL=%s\nINNER_PEER=%s\nMODE=packets-decreaser\n' \
   "$SRC" "$PD_VTEP" "$INNER_LOCAL" "$INNER_PEER" > /run/pd-gre-endpoint.env
 
-birdc disable ebgp_as210699 >/dev/null 2>&1 || true
 
 $VPP ip table add "$PBR_TABLE" 2>/dev/null || true
 $VPP ip route del ::/0 2>/dev/null || true

@@ -1,22 +1,22 @@
 # Native Digi PPPoE in VPP
 
-## Status (2026-08-03)
+## Status
 
-**Dataplane: DONE (native, no Linux pppd hairpin)**
+**Dataplane: native (no Linux pppd hairpin)**
 
 ```
 x520wan → pppoeclient → digi
-  IPv4: 100.64.x.x/32 (CGNAT) + NAT44 ← loop10/79.172.242.0/24
+  IPv4: 100.64.x.x/32 (CGNAT) — Digi SNAT only if /run/vpp-prefer-digi-snat
   IPv6: 2a01:4700:80ff:ffff::<ipv4-hex>/64  (Digi WAN, globally routed)
-  GRE:  gre0 src=<Digi WAN IPv6> dst=2a10:4646:500::1  underlay=digi
+  GRE:  gre0 → Packets Decreaser VTEP 2a0e:97c0:4c1::60 (see router/packets-decreaser/)
 ```
 
-Verified:
+Verified baseline:
 - `ping 1.1.1.1 source digi` OK
-- `ping 2a10:4646:500::1 source digi` OK (Infrawire underlay)
+- Digi `80ff` underlay ICMPv6 to PD VPS OK
 - session `PPPOE_CLIENT_SESSION`, no `pppd` / `tap20`
 
-**Infrawire BGP:** waiting on Infrawire VTEP update to the live Digi WAN IPv6 in `/run/infrawire-vtep.txt`. Until then clients stay on Digi SNAT (`digi-snat-fallback.sh`).
+Transit BGP for `79.172.242.0/24` runs on the **PD VPS**, not Digi Bird.
 
 ## Mode switch
 
@@ -44,15 +44,15 @@ sudo /usr/local/sbin/vpp-pppoe-rollback-linux.sh
 example: 100.64.142.24 → 2a01:4700:80ff:ffff::6440:8e18/64
 ```
 
-Live VTEP for Infrawire: `cat /run/infrawire-vtep.txt`
+Live Digi VTEP for PD GRE: `cat /run/pd-vtep-live.txt`
 
-After they update:
+After Digi reconnect / VPP restart:
 
 ```bash
-sudo /usr/local/sbin/infrawire-gre-activate.sh
+sudo PD_FORCE_SYNC=1 /usr/local/sbin/pd-gre-activate.sh
 ```
 
 ## Notes
 
-- Do **not** bounce Digi/VPP just to “refresh” the VTEP — IPv4/IPv6 change every reconnect.
-- DHCPv6-PD via LCP `vpp-digi` still does not get Digi replies; Infrawire underlay no longer depends on it.
+- Do **not** bounce Digi/VPP just to “refresh” the VTEP — IPv4/IPv6 change every reconnect; watchdog + `ExecStartPost` handle sync.
+- DHCPv6-PD via LCP `vpp-digi` still does not get Digi replies; PD GRE uses Digi WAN IPv6 directly.

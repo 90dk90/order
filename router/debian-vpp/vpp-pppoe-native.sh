@@ -90,7 +90,7 @@ if [ -n "$LL_LOCAL" ] && [ "$LL_LOCAL" != "::" ]; then
 fi
 
 # Digi WAN IPv6: embed CGNAT IPv4 into 2a01:4700:80ff:ffff::/64 (Digi pattern).
-# This is globally routed and is enough for Infrawire GRE underlay without DHCPv6-PD.
+# This is globally routed and is enough for PD GRE underlay without DHCPv6-PD.
 DIGI_IP4=$($VPP show pppoe client detail 2>/dev/null | sed -n 's/.*ipv4 local \([0-9.]*\) peer.*/\1/p' | tr -d '\r' | head -1)
 if [ -n "$DIGI_IP4" ] && [ "$DIGI_IP4" != "0.0.0.0" ]; then
   # Drop stale IPv4/IPv6 left from previous Digi sessions
@@ -118,12 +118,12 @@ PY
   fi
 fi
 
-# Best-effort in-VPP DHCPv6 (PD optional; Infrawire can use Digi WAN IPv6 above)
+# Best-effort in-VPP DHCPv6 (PD optional; GRE uses Digi WAN IPv6 above)
 $VPP dhcp6 client "$NAME" 2>/dev/null || true
 $VPP dhcp6 pd client "$NAME" prefix group digi-pd 2>/dev/null || true
 
 # Digi NAT44 only when explicitly falling back to CGNAT exit.
-# Infrawire primary path must keep public 79.172.242.0/24 (no Digi SNAT).
+# PD GRE primary path must keep public 79.172.242.0/24 (no Digi SNAT).
 $VPP ip route del 0.0.0.0/0 via 10.254.254.2 tap50 2>/dev/null || true
 if [ -e /run/vpp-prefer-digi-snat ]; then
   $VPP nat44 plugin enable 2>/dev/null || true
@@ -142,9 +142,6 @@ else
   $VPP nat44 plugin disable 2>/dev/null || true
 fi
 
-# Wire Infrawire GRE underlay on Digi WAN IPv6 (peer comes up after Infrawire VTEP update)
-/usr/local/sbin/infrawire-vpp-exit.sh >/dev/null 2>&1 || true
-/usr/local/sbin/infrawire-gre-up.sh >/dev/null 2>&1 || true
 
 $VPP show pppoe client || true
 $VPP show interface addr "$NAME" || true

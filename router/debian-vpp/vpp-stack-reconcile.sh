@@ -63,13 +63,13 @@ if [ ! -r /run/vpp-tap30-ipv6.env ]; then
 fi
 
 /bin/systemctl restart vpp-vxlan.service || true
-/bin/systemctl restart infrawire-gre.service || true
+/usr/local/sbin/pd-gre-activate.sh >/dev/null 2>&1 || true
 /bin/systemctl restart bird.service || true
 /usr/local/sbin/vpp-rx-placement.sh >/dev/null 2>&1 || true
 /usr/local/sbin/vpp-performance-tuning.sh >/dev/null 2>&1 || true
 /usr/local/sbin/vpp-mss-clamp.sh >/dev/null 2>&1 || true
 
 # If GRE peer is down, keep clients online via Digi SNAT
-if ! ping -c 1 -W 2 172.16.206.1 >/dev/null 2>&1; then
+if ! ping -c 1 -W 2 172.16.207.1 >/dev/null 2>&1; then
   /usr/local/sbin/digi-snat-fallback.sh >/dev/null 2>&1 || true
 fi
