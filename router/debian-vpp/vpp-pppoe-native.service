@@ -1,0 +1,16 @@
+[Unit]
+Description=Digi PPPoE client inside VPP (native)
+Requires=vpp.service vpp-bootstrap.service
+After=vpp.service vpp-bootstrap.service
+BindsTo=vpp.service
+PartOf=vpp.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-/etc/default/vpp-pppoe-native
+ExecStart=/usr/local/sbin/vpp-pppoe-native.sh
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
