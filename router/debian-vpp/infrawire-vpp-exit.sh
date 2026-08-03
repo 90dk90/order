@@ -18,6 +18,13 @@ HOST_IF=vpp-gre-infra
 PBR_TABLE=81
 PBR_SOURCE=79.172.242.0
 
+# Publish endpoint for Infrawire ops (do not bounce PPP to "refresh" this)
+umask 022
+printf '%s\n' "$SRC_VTEP" > /run/infrawire-vtep.txt
+printf 'SRC_VTEP=%s\nDST_VTEP=%s\nUNDERLAY_GW=%s\nGRE_LOCAL=%s\nGRE_PEER=%s\n' \
+  "$SRC_VTEP" "$DST_VTEP" "$UNDERLAY_GW" "$LOCAL_IP" "$PEER_IP" \
+  > /run/infrawire-endpoint.env
+
 # Static ND for Linux peer on tap30 (required after tap recreate)
 HOST_MAC=$(cat /sys/class/net/vpp6-host/address 2>/dev/null || true)
 if [ -n "$HOST_MAC" ]; then
@@ -55,19 +62,7 @@ if ! $VPP show lcp 2>/dev/null | grep -q "[[:space:]]$HOST_IF\\>"; then
   $VPP lcp create gre0 host-if "$HOST_IF" tun >/dev/null 2>&1 || true
 fi
 
-# Defaults via GRE (no Linux hairpin)
 $VPP ip table add "$PBR_TABLE" 2>/dev/null || true
-$VPP ip route del 0.0.0.0/0 table "$PBR_TABLE" 2>/dev/null || true
-$VPP ip route add 0.0.0.0/0 table "$PBR_TABLE" via "$PEER_IP" gre0
-$VPP ip route del 0.0.0.0/0 2>/dev/null || true
-$VPP ip route del 0.0.0.0/0 via 10.254.254.2 tap50 2>/dev/null || true
-$VPP ip route del 0.0.0.0/0 via 10.81.81.1 loop11 2>/dev/null || true
-$VPP ip route add 0.0.0.0/0 via "$PEER_IP" gre0
-
-# Remove stale L3XC to dead loop11 (old VXLAN2 path)
-for iface in loop10 x520lan x520extra0 x520extra1; do
-  $VPP l3xc del "$iface" via 10.81.81.1 loop11 2>/dev/null || true
-done
 
 # Keep client LAN on-link inside PBR table 81
 $VPP ip route del 79.172.242.0/24 table "$PBR_TABLE" 2>/dev/null || true
@@ -75,8 +70,24 @@ $VPP ip route add 79.172.242.0/24 table "$PBR_TABLE" via loop10
 $VPP ip route del 79.172.242.1/32 table "$PBR_TABLE" 2>/dev/null || true
 $VPP ip route add 79.172.242.1/32 table "$PBR_TABLE" via local
 
-# Client src PBR classify DISABLED:
-# fib0 default already exits via Infrawire gre0. Old l2 classify blackholed returns.
+# Remove stale L3XC to dead loop11 (old VXLAN2 path)
+for iface in loop10 x520lan x520extra0 x520extra1; do
+  $VPP l3xc del "$iface" via 10.81.81.1 loop11 2>/dev/null || true
+done
+
+# Default route: GRE unless Digi SNAT fallback flag is set
+if [ -e /run/vpp-prefer-digi-snat ]; then
+  :
+else
+  $VPP ip route del 0.0.0.0/0 table "$PBR_TABLE" 2>/dev/null || true
+  $VPP ip route add 0.0.0.0/0 table "$PBR_TABLE" via "$PEER_IP" gre0
+  $VPP ip route del 0.0.0.0/0 2>/dev/null || true
+  $VPP ip route del 0.0.0.0/0 via 10.254.254.2 tap50 2>/dev/null || true
+  $VPP ip route del 0.0.0.0/0 via 10.81.81.1 loop11 2>/dev/null || true
+  $VPP ip route add 0.0.0.0/0 via "$PEER_IP" gre0
+fi
+
+# Client src PBR classify DISABLED
 IDX=""
 if [ -r /run/vpp-vxlan2-pbr-classify-index ]; then
   IDX=$(cat /run/vpp-vxlan2-pbr-classify-index)

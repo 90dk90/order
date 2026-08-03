@@ -1,55 +1,50 @@
-# Digi / Infrawire softpath optimization (AS219084)
+# Router tune - target “perfect” before Infrawire VTEP update
 
-## Bottleneck
+## Opinion on the stack advice you pasted
 
-GRE underlay still hairpins through Linux:
+**VPP + Bird here is justified**, not overkill. Digi is 10G PPPoE softpathed through Linux taps; Infrawire is GRE+BGP for a public `/24`. Kernel+Bird alone would work for “a few GRE tunnels”, but you already hit softpath CPU walls (~1M softnet drops on CPU0, `tap20-tx no free tx slots`, Infrawire UL stuck ~2.6G vs Digi local ~6G). VPP on X520 is the right dataplane; Bird stays control-plane.
 
-`gre0 → tap30 → vpp6-host → ppp0 → vpp-pppoe → tap20 → x520wan`
+Where that advice is **right for you**:
+- **SMT Off** - already your case (6c/6t). Keep it Off.
+- **PBO Off** - agree. You want stable clocks, not overdrive jitter.
+- **isolcpus / nohz_full** for VPP workers - prepared in GRUB (`2-5`); apply on next reboot.
+- **Bird/OS off VPP cores** - Linux + Bird + `pppd` pinned to **0-1**; VPP workers **2-5**.
+- **MSS/MTU** - GRE 1448 / MSS 1408 (Digi PPPoE 1492 − IPv6 40 − GRE 4).
 
-Symptoms before this pass:
+Where to **ignore / nuance**:
+- “Don’t use VPP for GRE+BGP on Ryzen” - true for a light router; **false** once you push multi-G through a Linux PPPoE hairpin.
+- “PBO/Precision Boost Off entirely” - **PBO Off**, but stock turbo/CPB On + `performance` governor is fine for throughput. Deep C-states Off in BIOS.
+- Native VPP PPPoE client is **not** in 26.06 (BRAS plugin only). Ceiling until that exists (or Digi IPoE): softpath tune + eventually pppoeclient.
 
-- ~1M `softnet` drops on **CPU0 only**
-- `tap20-tx no free tx slots` under load
-- Infrawire UL ~2.5–2.6G vs Digi local ~6G UL
+## Live layout (frozen - do not bounce PPP)
 
-Root cause: VPP workers pinned to CPUs **1–5**, Linux softpath forced onto **CPU0 alone**.
+| Role | CPUs |
+|------|------|
+| Linux / `pppd` / Bird / RPS | 0-1 |
+| VPP main | 0 |
+| VPP workers | 2-5 |
 
-## Changes applied (live)
+| Knob | Value |
+|------|-------|
+| TAP/DPDK rings | 4096 |
+| Queues | 4 |
+| GRE MTU / MSS | 1448 / 1408 |
+| VTEP (ask Infrawire) | `2a01:4700:8086:be00::2` |
 
-1. **VPP workers `2-5`** — free **CPU1** for Linux RPS/XPS/`pppd`
-2. **Linux affinity `0-1`** (`rps/xps=03`) on `ppp0`, `vpp-pppoe`, `vpp6-host`
-3. **TAP rings 4096**, **4 queues** (match 4 workers)
-4. **DPDK RX/TX desc 4096**, 4 queues
-5. Stronger sysctl (backlog / budget / BBR / buffers)
-6. GRUB prepared: `isolcpus=2-5 nohz_full=2-5 rcu_nocbs=2-5` (**needs reboot**)
-7. Infrawire GRE scripts now follow live Digi PD from `/run/vpp-tap30-ipv6.env`
+## BIOS checklist (next physical visit)
 
-## Action required: Infrawire VTEP
+- SMT **Disabled** (already)
+- PBO **Disabled**
+- Maximum Performance profile
+- C-states / deep idle **Disabled**
+- CPB/turbo **Enabled** (throughput) unless you want ultra-flat latency
+- After BIOS: reboot once so GRUB `isolcpus=2-5 nohz_full=2-5 rcu_nocbs=2-5` applies
 
-Digi reassigns the delegated `/56` on each PPPoE reconnect. After the VPP restart used to apply CPU/ring changes, the PD left `2a01:4700:8080:6400::/56`.
+## After Infrawire confirms VTEP
 
-- Underlay ping to `2a10:4646:500::1` works with the **current** PD
-- GRE/BGP stay down until Infrawire updates the customer GRE endpoint to the **current** VPP VTEP (`VXLAN_LOCAL_IP6` in `/run/vpp-tap30-ipv6.env`, currently `…::2` on tap30)
-
-Prefer registering Infrawire on a **stable** Digi address if they can (or ask Digi for a static PD). Avoid bouncing `pppoe-vpp` unless necessary.
-
-## Ceiling without redesign
-
-Softpath + single-threaded `pppd` will not match Digi-local ~6G UL through GRE.
-To approach ~4G+ Infrawire UL (peer capability), move **PPPoE into VPP** (no Linux hairpin).
-
-## BIOS (optional, reboot)
-
-- Enable **Precision Boost / PBO** (CPU stuck ~3.6 GHz, no cpufreq sysfs)
-- Enable **SMT** → 12 threads → more Linux softirq CPUs without cutting VPP workers
-
-## Files on router
-
-- `/etc/vpp/startup.conf`
-- `/usr/local/sbin/vpp-bootstrap.sh`
-- `/usr/local/sbin/vpp-performance-tuning.sh`
-- `/usr/local/sbin/vpp-rx-placement.sh`
-- `/usr/local/sbin/infrawire-vpp-exit.sh`
-- `/usr/local/sbin/infrawire-gre-up.sh`
-- `/etc/sysctl.d/99-vpp-softpath.conf`
-- `/etc/default/grub` (isolcpus — reboot to apply)
+```bash
+sudo /usr/local/sbin/infrawire-gre-activate.sh
+ping -c 3 172.16.206.1
+sudo birdc show protocols
+# then speedtest from 79.172.242.2
+```
