@@ -5,6 +5,7 @@ VPP="/usr/bin/vppctl -s /run/vpp/cli.sock"
 PEER_IP=172.16.206.1
 
 rm -f /run/vpp-prefer-digi-snat
+/usr/local/sbin/vpp-cleanup-fallbacks.sh >/dev/null 2>&1 || true
 /usr/local/sbin/infrawire-vpp-exit.sh
 /usr/local/sbin/infrawire-gre-up.sh
 
