@@ -4,10 +4,18 @@ set -eu
 VPP="/usr/bin/vppctl -s /run/vpp/cli.sock"
 LAN_BD="${LAN_BD:-10}"
 
-# Digi publishes 80ff (underlay VTEP) + sometimes 807f — always prefer 80ff.
+# Digi VTEP = pppoeclient "wan-ipv6 observed" (currently 807f/...).
+# Do NOT use synthetic 2a01:4700:80ff:... that vpp-pppoe-native may also install —
+# that prefix is outbound-ok but NOT inbound-reachable from the internet/PD.
 pick_digi_vtep() {
+  obs=$($VPP show pppoe client detail 2>/dev/null | sed -n 's/.*wan-ipv6 observed \([^ /]*\).*/\1/p' | tr -d '\r' | head -1)
+  if [ -n "$obs" ]; then
+    printf '%s\n' "$obs"
+    return 0
+  fi
+  # Fallback: prefer 807f on digi, then any Digi 2a01:4700 except 80ff
   $VPP show interface addr digi 2>/dev/null | awk '
-    /L3 2a01:4700:80ff:/{gsub(/\/.*/,"",$2); print $2; exit}
+    /L3 2a01:4700:807f:/{gsub(/\/.*/,"",$2); print $2; exit}
   '
 }
 
@@ -21,13 +29,12 @@ while [ $i -lt 90 ]; do
   i=$((i+1))
   sleep 2
 done
-[ -n "$SRC" ] || { echo "pd-gre: no Digi 80ff IPv6 yet"; exit 1; }
+[ -n "$SRC" ] || { echo "pd-gre: no Digi observed WAN IPv6 yet"; exit 1; }
 
 OLD=$(cat /run/pd-vtep-live.txt 2>/dev/null || true)
 printf '%s\n' "$SRC" > /run/pd-vtep-live.txt
 printf 'SRC_VTEP=%s\nDST_VTEP=%s\nINNER_LOCAL=%s\nINNER_PEER=%s\nMODE=packets-decreaser\n' \
   "$SRC" "$PD_VTEP" "$INNER_LOCAL" "$INNER_PEER" > /run/pd-gre-endpoint.env
-
 
 $VPP ip table add "$PBR_TABLE" 2>/dev/null || true
 $VPP ip route del ::/0 2>/dev/null || true
@@ -35,7 +42,6 @@ $VPP ip route add ::/0 via fe80::1 digi 2>/dev/null || true
 $VPP ip route del "$PD_VTEP/128" 2>/dev/null || true
 $VPP ip route add "$PD_VTEP/128" via fe80::1 digi 2>/dev/null || true
 
-# Client LAN: BD + BVI loop10 (survives VPP restart)
 $VPP create bridge-domain "$LAN_BD" 2>/dev/null || true
 if ! $VPP show interface loop10 >/dev/null 2>&1; then
   $VPP create loopback interface instance 10 >/dev/null 2>&1 || true
@@ -58,7 +64,6 @@ else
 fi
 
 if [ "$NEED_GRE" = 1 ]; then
-  # VPP 26.06: delete via "create ... del"
   if [ -n "$CUR_SRC" ]; then
     $VPP create gre tunnel src "$CUR_SRC" dst "$PD_VTEP" del 2>/dev/null || true
   fi

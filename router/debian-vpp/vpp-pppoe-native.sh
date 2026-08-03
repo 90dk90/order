@@ -89,11 +89,10 @@ if [ -n "$LL_LOCAL" ] && [ "$LL_LOCAL" != "::" ]; then
   fi
 fi
 
-# Digi WAN IPv6: embed CGNAT IPv4 into 2a01:4700:80ff:ffff::/64 (Digi pattern).
-# This is globally routed and is enough for PD GRE underlay without DHCPv6-PD.
+# Digi WAN IPv6 comes from pppoeclient "wan-ipv6 observed" (e.g. 807f/...).
+# Do NOT install synthetic 2a01:4700:80ff:... — outbound works, inbound from PD/Internet does not.
 DIGI_IP4=$($VPP show pppoe client detail 2>/dev/null | sed -n 's/.*ipv4 local \([0-9.]*\) peer.*/\1/p' | tr -d '\r' | head -1)
 if [ -n "$DIGI_IP4" ] && [ "$DIGI_IP4" != "0.0.0.0" ]; then
-  # Drop stale IPv4/IPv6 left from previous Digi sessions
   for old in $($VPP show interface addr "$NAME" 2>/dev/null | sed -n 's/.*L3 \([0-9.]*\/32\).*/\1/p'); do
     case "$old" in
       "$DIGI_IP4"/32) ;;
@@ -103,22 +102,11 @@ if [ -n "$DIGI_IP4" ] && [ "$DIGI_IP4" != "0.0.0.0" ]; then
   for old in $($VPP show interface addr "$NAME" 2>/dev/null | sed -n 's/.*L3 \(2a01:4700:80ff:[^ ]*\).*/\1/p'); do
     $VPP set interface ip address del "$NAME" "$old" 2>/dev/null || true
   done
-
-  DIGI_IP6=$(DIGI_IP4="$DIGI_IP4" python3 - <<'PY'
-import os
-octets=[int(x) for x in os.environ["DIGI_IP4"].split(".")]
-h="".join(f"{o:02x}" for o in octets)
-print(f"2a01:4700:80ff:ffff::{h[0:4]}:{h[4:8]}/64")
-PY
-)
-  if [ -n "$DIGI_IP6" ]; then
-    $VPP set interface ip address "$NAME" "$DIGI_IP6" 2>/dev/null || true
-    $VPP ip route del ::/0 2>/dev/null || true
-    $VPP ip route add ::/0 via fe80::1 "$NAME" 2>/dev/null || true
-  fi
+  $VPP ip route del ::/0 2>/dev/null || true
+  $VPP ip route add ::/0 via fe80::1 "$NAME" 2>/dev/null || true
 fi
 
-# Best-effort in-VPP DHCPv6 (PD optional; GRE uses Digi WAN IPv6 above)
+# Best-effort in-VPP DHCPv6 (PD optional; GRE uses Digi-observed WAN IPv6)
 $VPP dhcp6 client "$NAME" 2>/dev/null || true
 $VPP dhcp6 pd client "$NAME" prefix group digi-pd 2>/dev/null || true
 

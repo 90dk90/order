@@ -4,7 +4,7 @@ VPP="/usr/bin/vppctl -s /run/vpp/cli.sock"
 . /etc/pd/pd-gre.conf
 $VPP show version >/dev/null 2>&1 || exit 0
 $VPP show interface digi 2>/dev/null | grep -q ' up ' || exit 0
-SRC=$($VPP show interface addr digi 2>/dev/null | awk '/L3 2a01:4700:80ff:/{gsub(/\/.*/,"",$2); print $2; exit}')
+SRC=$($VPP show pppoe client detail 2>/dev/null | sed -n 's/.*wan-ipv6 observed \([^ /]*\).*/\1/p' | tr -d '\r' | head -1)
 [ -n "$SRC" ] || exit 0
 OLD=$(cat /run/pd-vtep-live.txt 2>/dev/null || true)
 GRE_OK=1

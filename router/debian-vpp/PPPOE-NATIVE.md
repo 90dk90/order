@@ -7,14 +7,16 @@
 ```
 x520wan → pppoeclient → digi
   IPv4: 100.64.x.x/32 (CGNAT) — Digi SNAT only if /run/vpp-prefer-digi-snat
-  IPv6: 2a01:4700:80ff:ffff::<ipv4-hex>/64  (Digi WAN, globally routed)
+  IPv6: Digi-observed WAN (pppoeclient), e.g. 2a01:4700:807f:ffff::…/64
   GRE:  gre0 → Packets Decreaser VTEP 2a0e:97c0:4c1::60 (see router/packets-decreaser/)
 ```
 
 Verified baseline:
 - `ping 1.1.1.1 source digi` OK
-- Digi `80ff` underlay ICMPv6 to PD VPS OK
+- Digi-observed underlay ICMPv6 ↔ PD VPS OK both ways
 - session `PPPOE_CLIENT_SESSION`, no `pppd` / `tap20`
+
+Do **not** install synthetic `2a01:4700:80ff:ffff::` — inbound from PD fails on that prefix.
 
 Transit BGP for `79.172.242.0/24` runs on the **PD VPS**, not Digi Bird.
 
@@ -37,14 +39,14 @@ sudo /usr/local/sbin/vpp-pppoe-rollback-linux.sh
 - Binary patch on router: IPv6CP link-local install uses `/128` (stock plugin used `/64`, rejected by VPP 26.06)
 - Backup: `/usr/lib/.../pppoeclient_plugin.so.bak-ll128`
 
-## Digi WAN IPv6 formula
+## Digi WAN IPv6
 
-```
-2a01:4700:80ff:ffff:: + hex(CGNAT IPv4)
-example: 100.64.142.24 → 2a01:4700:80ff:ffff::6440:8e18/64
-```
+Use pppoeclient observed address only:
 
-Live Digi VTEP for PD GRE: `cat /run/pd-vtep-live.txt`
+```bash
+vppctl show pppoe client detail | grep wan-ipv6
+cat /run/pd-vtep-live.txt
+```
 
 After Digi reconnect / VPP restart:
 
