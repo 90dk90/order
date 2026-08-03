@@ -1,0 +1,21 @@
+[Unit]
+Description=Run PD GRE watchdog every minute
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=60
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target
+---
+[Unit]
+Description=PD GRE VTEP watchdog (Digi IPv6 drift)
+After=vpp.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pd-gre-watchdog.sh
+---
+[Service]
+ExecStartPost=/usr/local/sbin/pd-gre-activate.sh
