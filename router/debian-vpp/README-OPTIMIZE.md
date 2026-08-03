@@ -27,7 +27,7 @@ Where the advice is **right for you**:
 | Plugins | slim allow-list (see `startup.conf`) |
 | GRE MTU / MSS | 1448 / 1408 |
 | Digi | VPP `pppoeclient` → `digi` |
-| VTEP | Digi `80ff` only (`cat /run/pd-vtep-live.txt`) |
+| VTEP | Digi-observed WAN IPv6 (`cat /run/pd-vtep-live.txt`, not synthetic 80ff) |
 
 ## BIOS checklist (next physical visit)
 
