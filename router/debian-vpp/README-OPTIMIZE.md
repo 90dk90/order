@@ -26,11 +26,13 @@ Where to **ignore / nuance**:
 
 | Knob | Value |
 |------|-------|
-| TAP/DPDK rings | 4096 |
+| TAP/DPDK rings | 4096 (X520 max; 8192 unsupported) |
 | Queues | 4 |
+| Scheduler | `fifo` + priority `1` |
+| Plugins | slim allow-list (see `startup.conf`) |
 | GRE MTU / MSS | 1448 / 1408 |
 | Digi | VPP `pppoeclient` → `digi` |
-| VTEP (ask Infrawire) | `cat /run/infrawire-vtep.txt` (Digi WAN IPv6 `2a01:4700:80ff:ffff::…`) |
+| VTEP | Digi `80ff` only (`cat /run/pd-vtep-live.txt`) |
 
 ## BIOS checklist (next physical visit)
 
