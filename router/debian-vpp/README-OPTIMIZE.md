@@ -49,3 +49,22 @@ ping -c 3 172.16.206.1
 sudo birdc show protocols
 # then speedtest from 79.172.242.2
 ```
+
+## Throughput ceiling (dedicated `79.172.242.2`)
+
+Measured live (BBR+`fq`, rings 8192, GRE MTU 1448 / MSS 1408, VPP SYN-only MSS clamp):
+
+| Ookla peer | Down | Up | Note |
+|------------|------|----|------|
+| Orange Slovakia (Banska Bystrica) | **~7.0–7.3 Gbps** | **~4.6 Gbps** | path can hit the 6↓ / 4–5↑ target |
+| Detronics / several Budapest peers | ~4.8–6.8 Gbps | ~2.1–2.3 Gbps | peer-limited upload, not local stack |
+| Digi CGNAT IPv4 alone (earlier) | — | ~4.7 Gbps | Digi line has headroom |
+
+So further local tuning is mostly marginal. Remaining structural limits:
+
+1. **Ookla peer quality** - always test 2–3 servers; one bad peer looks like a 2.3G “cap”.
+2. **GRE outer RSS** - Infrawire GRE/IPv6 5-tuple is near-constant → download mostly on one VPP worker (still clears 7G).
+3. **Inner MTU 1448** - hard max under Digi PPPoE 1492 − IPv6/GRE; no free lunch without a different underlay.
+4. **PVE `enp16s0` rx_missed** under 7G bursts - rings already maxed; optional BIOS C-state off / slightly higher coalesce.
+
+PVE persist files live under `router/pve/` (`pve-nic-tune.sh`, `pve-mss-clamp.sh`, `99-infrawire-tcp.conf`).

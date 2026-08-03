@@ -13,8 +13,8 @@ done
 
 for iface in $IFS_TO_CLAMP; do
   if $VPP show interface "$iface" >/dev/null 2>&1; then
+    # Prefer SYN-only tcp-mss-clamp; L2 clamp inspects every frame (too costly at multi-G).
     $VPP set interface l2-mss-clamp "$iface" disable >/dev/null 2>&1 || true
-    $VPP set interface l2-mss-clamp "$iface" mss "$MSS" >/dev/null 2>&1 || true
     $VPP set interface tcp-mss-clamp "$iface" ip4 tx ip4-mss "$MSS" ip6 disable >/dev/null 2>&1 || true
   fi
 done
