@@ -8,10 +8,10 @@ Update the **customer / local GRE IPv6 endpoint** to the live value on the route
 cat /run/infrawire-vtep.txt
 ```
 
-Current native Digi WAN pattern (example):
+Current native Digi WAN pattern (example — **always** read live file):
 
 ```
-2a01:4700:80ff:ffff::6440:8e18
+2a01:4700:80ff:ffff::6440:864d
 ```
 
 Remote stays:
@@ -38,6 +38,8 @@ gre0 src=<Digi WAN IPv6> → digi → x520wan → Digi → Infrawire
 ```
 
 No Linux `ppp0` / `tap30` hairpin for the underlay.
+
+Client LAN (`loop10` / `79.172.242.0/24`) uses **IP table 81** with default `via gre0`. Digi SNAT stays **off** while Infrawire is primary so clients keep their public addresses.
 
 ## Important
 

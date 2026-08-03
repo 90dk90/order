@@ -89,6 +89,8 @@ fi
 
 $VPP set interface state gre0 up
 $VPP set interface mtu packet 1448 gre0
+# Never leave gre0 unnumbered to digi (steals Digi CGNAT/WAN addrs onto GRE)
+$VPP set interface unnumbered del gre0 2>/dev/null || true
 $VPP set interface ip address del gre0 all || true
 $VPP set interface ip address gre0 "$LOCAL_IP"
 
@@ -97,6 +99,15 @@ if ! $VPP show lcp 2>/dev/null | grep -q "[[:space:]]$HOST_IF\\>"; then
 fi
 
 $VPP ip table add "$PBR_TABLE" 2>/dev/null || true
+
+# Client LAN lives in table 81 so Digi pppoeclient default (fib0) cannot steal egress
+LOOP_ADDR=$($VPP show interface address loop10 2>/dev/null | sed -n 's/.*L3 \([0-9.][0-9.]*\/[0-9]*\).*/\1/p' | head -1)
+LOOP_ADDR=${LOOP_ADDR:-79.172.242.1/24}
+$VPP set interface ip address del loop10 all 2>/dev/null || true
+$VPP set interface ip table loop10 "$PBR_TABLE" 2>/dev/null || true
+$VPP set interface ip address loop10 "$LOOP_ADDR" 2>/dev/null || true
+$VPP set interface state loop10 up 2>/dev/null || true
+
 $VPP ip route del 79.172.242.0/24 table "$PBR_TABLE" 2>/dev/null || true
 $VPP ip route add 79.172.242.0/24 table "$PBR_TABLE" via loop10
 $VPP ip route del 79.172.242.1/32 table "$PBR_TABLE" 2>/dev/null || true
@@ -109,12 +120,27 @@ done
 if [ -e /run/vpp-prefer-digi-snat ]; then
   :
 else
+  # Digi SNAT must stay off while Infrawire is primary (public /24 via GRE)
+  $VPP set interface nat44 in loop10 out digi del 2>/dev/null || true
+  $VPP set interface nat44 in x520lan out digi del 2>/dev/null || true
+  $VPP set interface nat44 in loop10 out digi output-feature del 2>/dev/null || true
+  $VPP set interface nat44 in x520lan out digi output-feature del 2>/dev/null || true
+  DIGI_IP4=$($VPP show interface address digi 2>/dev/null | sed -n 's/.*L3 \([0-9.][0-9.]*\)\/32.*/\1/p' | head -1)
+  if [ -n "$DIGI_IP4" ]; then
+    $VPP nat44 add address "$DIGI_IP4" del 2>/dev/null || true
+  fi
+  $VPP clear nat44 ed sessions 2>/dev/null || true
+  $VPP nat44 plugin disable 2>/dev/null || true
+
+  # Interface-route default: avoid unresolved via 172.16.206.1 (LCP /32 peer traps)
   $VPP ip route del 0.0.0.0/0 table "$PBR_TABLE" 2>/dev/null || true
-  $VPP ip route add 0.0.0.0/0 table "$PBR_TABLE" via "$PEER_IP" gre0
+  $VPP ip route del 0.0.0.0/0 table "$PBR_TABLE" via "$PEER_IP" gre0 2>/dev/null || true
+  $VPP ip route add 0.0.0.0/0 table "$PBR_TABLE" via gre0
   $VPP ip route del 0.0.0.0/0 2>/dev/null || true
   $VPP ip route del 0.0.0.0/0 via 10.254.254.2 tap50 2>/dev/null || true
   $VPP ip route del 0.0.0.0/0 via 10.81.81.1 loop11 2>/dev/null || true
-  $VPP ip route add 0.0.0.0/0 via "$PEER_IP" gre0
+  $VPP ip route del 0.0.0.0/0 via "$PEER_IP" gre0 2>/dev/null || true
+  $VPP ip route add 0.0.0.0/0 via gre0 2>/dev/null || true
 fi
 
 IDX=""

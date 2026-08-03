@@ -122,17 +122,25 @@ fi
 $VPP dhcp6 client "$NAME" 2>/dev/null || true
 $VPP dhcp6 pd client "$NAME" prefix group digi-pd 2>/dev/null || true
 
-# NAT44: client LAN -> Digi CGNAT
-$VPP nat44 plugin enable 2>/dev/null || true
-$VPP set interface nat44 in loop10 out "$NAME" 2>/dev/null || true
-$VPP set interface nat44 in x520lan out "$NAME" 2>/dev/null || true
-if [ -n "$DIGI_IP4" ]; then
-  $VPP nat44 add address "$DIGI_IP4" 2>/dev/null || true
-fi
-
-# Prefer Digi default; drop temporary SNAT hairpin default if present
+# Digi NAT44 only when explicitly falling back to CGNAT exit.
+# Infrawire primary path must keep public 79.172.242.0/24 (no Digi SNAT).
 $VPP ip route del 0.0.0.0/0 via 10.254.254.2 tap50 2>/dev/null || true
-rm -f /run/vpp-prefer-digi-snat
+if [ -e /run/vpp-prefer-digi-snat ]; then
+  $VPP nat44 plugin enable 2>/dev/null || true
+  $VPP set interface nat44 in loop10 out "$NAME" 2>/dev/null || true
+  $VPP set interface nat44 in x520lan out "$NAME" 2>/dev/null || true
+  if [ -n "$DIGI_IP4" ]; then
+    $VPP nat44 add address "$DIGI_IP4" 2>/dev/null || true
+  fi
+else
+  $VPP set interface nat44 in loop10 out "$NAME" del 2>/dev/null || true
+  $VPP set interface nat44 in x520lan out "$NAME" del 2>/dev/null || true
+  if [ -n "$DIGI_IP4" ]; then
+    $VPP nat44 add address "$DIGI_IP4" del 2>/dev/null || true
+  fi
+  $VPP clear nat44 ed sessions 2>/dev/null || true
+  $VPP nat44 plugin disable 2>/dev/null || true
+fi
 
 # Wire Infrawire GRE underlay on Digi WAN IPv6 (peer comes up after Infrawire VTEP update)
 /usr/local/sbin/infrawire-vpp-exit.sh >/dev/null 2>&1 || true

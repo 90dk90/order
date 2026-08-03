@@ -54,14 +54,17 @@ for i in $(seq 1 60); do
 done
 if ip link show "$HOST_IF" >/dev/null 2>&1; then
   ip link set "$HOST_IF" up
-  ip link set "$HOST_IF" mtu 1476
+  ip link set "$HOST_IF" mtu 1448
+  # /30 only — a connected /32 peer route LCP-syncs into VPP and breaks
+  # "via 172.16.206.1 gre0" (unresolved). Prefer interface-route defaults.
   ip addr replace "$LOCAL_IP" dev "$HOST_IF"
-  ip route replace "$PEER_IP/32" dev "$HOST_IF"
+  ip route del "$PEER_IP/32" dev "$HOST_IF" 2>/dev/null || true
+  ip route del "$PEER_IP/32" 2>/dev/null || true
   sysctl -w net.ipv4.conf."$HOST_IF".rp_filter=0 >/dev/null || true
 fi
 
 # Optional host policy routing (control-plane / diagnostics)
-ip route replace default via "$PEER_IP" dev "$HOST_IF" table 210699 2>/dev/null || true
-ip route replace "$PEER_IP/32" dev "$HOST_IF" table 210699 2>/dev/null || true
+ip route replace default dev "$HOST_IF" table 210699 2>/dev/null || true
+ip route del "$PEER_IP/32" table 210699 2>/dev/null || true
 ip rule del from 79.172.242.0/24 table 210699 2>/dev/null || true
 ip rule add from 79.172.242.0/24 table 210699 priority 100 2>/dev/null || true
