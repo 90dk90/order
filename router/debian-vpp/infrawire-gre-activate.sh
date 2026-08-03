@@ -26,6 +26,9 @@ $VPP ip table add 81 2>/dev/null || true
 $VPP ip route del 0.0.0.0/0 table 81 2>/dev/null || true
 $VPP ip route del 0.0.0.0/0 table 81 via "$PEER_IP" gre0 2>/dev/null || true
 $VPP ip route add 0.0.0.0/0 table 81 via gre0
+# gre0 (fib0) -> client LAN
+$VPP ip route del 79.172.242.0/24 2>/dev/null || true
+$VPP ip route add 79.172.242.0/24 via loop10
 
 systemctl restart bird.service || true
 /usr/local/sbin/vpp-mss-clamp.sh || true
