@@ -38,7 +38,10 @@ fi
 [ -n "$IDX" ] || IDX=0
 
 # sport on proto 58 = ICMPv6 type (echo-request=128).
+# IPv4 permit-all is required: an IPv6-only ACL on digi implicitly denies
+# Digi CGNAT replies and kills PPPoE IPv4 egress (sticky Digi / NAT44).
 $VPP set acl-plugin acl index "$IDX" tag "$TAG" \
+  permit src 0.0.0.0/0 dst 0.0.0.0/0, \
   permit src fe80::/10 dst ::/0, \
   permit src ::/0 dst fe80::/10, \
   permit src "$PD_VTEP/128" dst "$SRC/128" proto 47, \
