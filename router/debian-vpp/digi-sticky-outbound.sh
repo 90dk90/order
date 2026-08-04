@@ -19,7 +19,10 @@ set -euo pipefail
 
 VPP_BIN="${VPP_BIN:-/usr/bin/vppctl}"
 VPP_SOCK="${VPP_SOCK:-/run/vpp/cli.sock}"
-vpp() { "$VPP_BIN" -s "$VPP_SOCK" "$@" 2>&1 | tr -d '\r'; }
+vpp() {
+  # Strip CR from vppctl; never fail the script on pipe/close races
+  "$VPP_BIN" -s "$VPP_SOCK" "$@" 2>&1 | tr -d '\r' || true
+}
 
 LAN_BD="${LAN_BD:-10}"
 LAN_GW="${LAN_GW:-79.172.242.1}"
