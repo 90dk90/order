@@ -50,8 +50,8 @@ for iface in x520lan x520extra0 x520extra1; do
   $VPP set interface l2 bridge "$iface" "$LAN_BD" 2>/dev/null || true
   $VPP set interface state "$iface" up 2>/dev/null || true
 done
-# Ensure loop10 exists then attach as BVI (VPP 26.x)
-if ! $VPP show interface loop10 >/dev/null 2>&1; then
+# Ensure loop10 exists then attach as BVI (VPP 26.x — create may yield loop10)
+if ! $VPP show interface 2>/dev/null | grep -q '^loop10'; then
   $VPP create loopback interface instance 10 2>/dev/null || true
 fi
 $VPP set interface l2 bridge loop10 "$LAN_BD" bvi 2>/dev/null || true
@@ -89,8 +89,7 @@ STICKY_ON=0
 
 $VPP set interface ip address del loop10 79.172.242.1/24 2>/dev/null || true
 $VPP set interface ip table loop10 "$PBR_TABLE" 2>/dev/null || true
-# Digi-only sticky: Linux owns .1 on vpp-sticky — do NOT put .1 back on loop10
-# (watchdog/activate would otherwise ARP-fight the sticky GW every sync).
+# Linux sticky owns .1 on vpp-sticky — do not put .1 on loop10 when sticky on
 if [ "$STICKY_ON" = 0 ]; then
   $VPP set interface ip address loop10 79.172.242.1/24 2>/dev/null || true
 fi
@@ -102,7 +101,6 @@ $VPP set interface l2-mss-clamp x520lan disable 2>/dev/null || true
 
 $VPP ip route del table "$PBR_TABLE" 0.0.0.0/0 2>/dev/null || true
 $VPP ip route add table "$PBR_TABLE" 0.0.0.0/0 via "$INNER_PEER" gre0 2>/dev/null || true
-# Whole /24 on LAN bridge (any dedicated .2/.3/.4/…)
 $VPP ip route del 79.172.242.0/24 2>/dev/null || true
 $VPP ip route add 79.172.242.0/24 via loop10 2>/dev/null || true
 $VPP ip route del table "$PBR_TABLE" 79.172.242.0/24 2>/dev/null || true

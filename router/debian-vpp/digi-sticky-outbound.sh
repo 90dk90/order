@@ -1,12 +1,12 @@
 #!/bin/bash
-# Digi-only sticky max-BW egress (PVE stays on GW .1 — no PVE iptables/routes).
+# Digi-only sticky max-BW egress (Linux L3 policy; PVE stays on GW .1).
 #
 #   Any host on 79.172.242.0/24 → GW 79.172.242.1 (Linux on LAN bridge)
 #     TCP SYN (client NEW)  → Digi PPPoE + NAT44 (10G)
 #     else (SYN-ACK/UDP/ICMP, inbound service replies) → GRE/PD
 #
-# Enable persistence: touch /etc/pd/sticky-digi + enable digi-sticky-outbound.service
-# pd-gre-activate / watchdog re-apply this after GRE sync.
+# Note: VPP-native ABF path is WIP (abf via digi hop empty on pppox).
+# This Linux hairpin is the production path until ABF+pppox is solid.
 set -euo pipefail
 VPP="${VPP:-/usr/bin/vppctl -s /run/vpp/cli.sock}"
 LAN_BD="${LAN_BD:-10}"
@@ -28,12 +28,23 @@ DIGI_MARK="${DIGI_MARK:-42}"
 PPPOE_PEER="${PPPOE_PEER:-}"
 
 ensure_tap() {
-  # $1=id $2=host-if $3=rxq $4=txq $5=rings
   local id="$1" host="$2" rxq="$3" txq="$4" rings="$5"
-  if ! $VPP show interface "tap${id}" 2>/dev/null | grep -q "tap${id}"; then
+  if ! $VPP show interface 2>/dev/null | grep -q "tap${id}"; then
     $VPP create tap id "$id" host-if-name "$host" host-mtu-size 1500 \
       num-rx-queues "$rxq" num-tx-queues "$txq" rx-ring-size "$rings" tx-ring-size "$rings"
   fi
+}
+
+ensure_loop10() {
+  if ! $VPP show interface 2>/dev/null | grep -q '^loop10'; then
+    $VPP create loopback interface instance 10
+  fi
+  $VPP set interface state loop10 up
+  $VPP set interface l2 bridge loop10 "$LAN_BD" bvi 2>/dev/null || true
+  for iface in x520lan x520extra0 x520extra1; do
+    $VPP set interface l2 bridge "$iface" "$LAN_BD" 2>/dev/null || true
+    $VPP set interface state "$iface" up 2>/dev/null || true
+  done
 }
 
 if [ -z "$PPPOE_PEER" ]; then
@@ -42,31 +53,32 @@ if [ -z "$PPPOE_PEER" ]; then
 fi
 : "${PPPOE_PEER:?pppoe peer missing}"
 
-# --- LAN gateway tap (bridged): Linux owns .1 so all /24 L3 hits Digi policy ---
+$VPP create bridge-domain "$LAN_BD" 2>/dev/null || true
+ensure_loop10
+
+# --- LAN gateway on Linux (bridged tap) ---
 ensure_tap "$STICKY_ID" "$STICKY_IF" 4 4 4096
 $VPP set interface state tap${STICKY_ID} up
 $VPP set interface l2 bridge tap${STICKY_ID} "$LAN_BD" 2>/dev/null || true
-
+# VPP BVI keeps no .1 — Linux owns GW
 $VPP set interface ip address del loop10 "${LAN_GW}/24" 2>/dev/null || true
+# ARP source on BVI so gre0→LAN glean works (without this: "no source address for ARP")
+$VPP set interface ip address del loop10 79.172.242.254/32 2>/dev/null || true
+$VPP set interface ip address loop10 79.172.242.254/32 2>/dev/null || true
 ip link set "$STICKY_IF" up
 ip addr del 79.172.242.253/24 dev "$STICKY_IF" 2>/dev/null || true
 ip addr replace "${LAN_GW}/24" dev "$STICKY_IF"
-# Answer ARP for GW; forward whole /24
-sysctl -q -w net.ipv4.conf."$STICKY_IF".proxy_arp=0
 sysctl -q -w net.ipv4.conf."$STICKY_IF".forwarding=1
 
-# --- Digi PPPoE out tap ---
 ensure_tap "$OUT_ID" "$OUT_IF" 4 4 4096
 $VPP set interface state tap${OUT_ID} up
 $VPP ip table add "$DIGI_TABLE" 2>/dev/null || true
-# address must be cleared before VRF move
 $VPP set interface ip address del tap${OUT_ID} all 2>/dev/null || true
 $VPP set interface ip table tap${OUT_ID} "$DIGI_TABLE" 2>/dev/null || true
 $VPP set interface ip address tap${OUT_ID} "${OUT_VPP}/30"
 ip link set "$OUT_IF" up
 ip addr replace "${OUT_HOST}/30" dev "$OUT_IF"
 
-# --- GRE inject tap (Linux → VPP table 81 → gre0) ---
 ensure_tap "$GRE_ID" "$GRE_IF" 2 2 2048
 $VPP set interface state tap${GRE_ID} up
 $VPP set interface ip address del tap${GRE_ID} all 2>/dev/null || true
@@ -75,23 +87,25 @@ $VPP set interface ip address tap${GRE_ID} "${GRE_VPP}/30"
 ip link set "$GRE_IF" up
 ip addr replace "${GRE_HOST}/30" dev "$GRE_IF"
 
-# Seed VPP ARP for any known /24 hosts (PVE .2, VMs .3/.4, …)
+# Seed ARP for known LAN hosts (glean alone is slow / lossy right after apply)
+for seed in 79.172.242.2 79.172.242.3 79.172.242.10; do
+  ping -c 1 -W 1 "$seed" >/dev/null 2>&1 || true
+done
 while read -r ip mac; do
   case "$ip" in
     79.172.242.*)
       [ "$ip" = "$LAN_GW" ] && continue
+      [ "$ip" = "79.172.242.254" ] && continue
       [ -n "$mac" ] && [ "$mac" != "FAILED" ] && [ "$mac" != "INCOMPLETE" ] && \
         $VPP set ip neighbor loop10 "$ip" "$mac" static 2>/dev/null || true
       ;;
   esac
-done < <(ip neigh show dev "$STICKY_IF" 2>/dev/null | awk '/lladdr/{print $1,$5}')
+done < <(ip neigh show 2>/dev/null | awk '/79\.172\.242\./ && /lladdr/{print $1,$5}')
 
-# NAT44 Digi path
 $VPP nat44 ei plugin enable sessions 131072 users 4096 inside-vrf "$DIGI_TABLE" outside-vrf 0 2>/dev/null \
   || $VPP nat44 ei plugin enable 2>/dev/null || true
-DIGI_IP=$($VPP show interface addr digi 2>/dev/null | awk '/L3 [0-9]+\./{gsub(/\/.*/,"",$2); print $2; exit}')
-[ -n "${DIGI_IP:-}" ] && $VPP nat44 ei add address "$DIGI_IP" 2>/dev/null || \
-  $VPP nat44 ei add interface address digi 2>/dev/null || true
+DIGI_IP=$($VPP show interface address digi 2>/dev/null | awk '/L3 [0-9]+\./{gsub(/\/.*/,"",$2); print $2; exit}')
+[ -n "${DIGI_IP:-}" ] && $VPP nat44 ei add address "$DIGI_IP" 2>/dev/null || true
 $VPP set interface nat44 ei in tap${OUT_ID} out digi del 2>/dev/null || true
 $VPP set interface nat44 ei in tap${OUT_ID} out digi
 $VPP nat44 ei forwarding disable 2>/dev/null || true
@@ -115,7 +129,6 @@ sysctl -q -w net.ipv4.conf."$STICKY_IF".rp_filter=0
 sysctl -q -w net.ipv4.conf."$OUT_IF".rp_filter=0
 sysctl -q -w net.ipv4.conf."$GRE_IF".rp_filter=0
 
-# Policy: TCP SYN → Digi mark; sticky connmark; default → GRE (whole /24)
 iptables -t mangle -N DIGI_STICKY 2>/dev/null || iptables -t mangle -F DIGI_STICKY
 iptables -t mangle -C PREROUTING -i "$STICKY_IF" -j DIGI_STICKY 2>/dev/null || \
   iptables -t mangle -I PREROUTING 1 -i "$STICKY_IF" -j DIGI_STICKY
@@ -157,4 +170,4 @@ iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss
 mkdir -p /etc/pd
 touch /etc/pd/sticky-digi
 
-echo "digi-sticky-outbound: GW ${LAN_GW} for ${LAN_PREFIX}; TCP SYN→digi/${PPPOE_PEER}; else→GRE"
+echo "digi-sticky-outbound: GW ${LAN_GW} Linux; TCP SYN→digi/${PPPOE_PEER}+NAT; else→GRE"
