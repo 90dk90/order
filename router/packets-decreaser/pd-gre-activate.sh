@@ -84,9 +84,16 @@ $VPP set interface ip address gre0 "$INNER_LOCAL" 2>/dev/null || true
 $VPP set interface tcp-mss-clamp gre0 ip4 disable ip6 disable 2>/dev/null || true
 $VPP set interface l2-mss-clamp gre0 disable 2>/dev/null || true
 
+STICKY_ON=0
+[ -f /etc/pd/sticky-digi ] && [ -x /usr/local/sbin/digi-sticky-outbound.sh ] && STICKY_ON=1
+
 $VPP set interface ip address del loop10 79.172.242.1/24 2>/dev/null || true
 $VPP set interface ip table loop10 "$PBR_TABLE" 2>/dev/null || true
-$VPP set interface ip address loop10 79.172.242.1/24 2>/dev/null || true
+# Digi-only sticky: Linux owns .1 on vpp-sticky — do NOT put .1 back on loop10
+# (watchdog/activate would otherwise ARP-fight the sticky GW every sync).
+if [ "$STICKY_ON" = 0 ]; then
+  $VPP set interface ip address loop10 79.172.242.1/24 2>/dev/null || true
+fi
 $VPP set interface state loop10 up 2>/dev/null || true
 $VPP set interface tcp-mss-clamp loop10 ip4 disable ip6 disable 2>/dev/null || true
 $VPP set interface l2-mss-clamp loop10 disable 2>/dev/null || true
@@ -95,12 +102,15 @@ $VPP set interface l2-mss-clamp x520lan disable 2>/dev/null || true
 
 $VPP ip route del table "$PBR_TABLE" 0.0.0.0/0 2>/dev/null || true
 $VPP ip route add table "$PBR_TABLE" 0.0.0.0/0 via "$INNER_PEER" gre0 2>/dev/null || true
+# Whole /24 on LAN bridge (any dedicated .2/.3/.4/…)
 $VPP ip route del 79.172.242.0/24 2>/dev/null || true
 $VPP ip route add 79.172.242.0/24 via loop10 2>/dev/null || true
-$VPP ip route del 79.172.242.2/32 2>/dev/null || true
-$VPP ip route add 79.172.242.2/32 via 79.172.242.2 loop10 2>/dev/null || true
-$VPP ip route del 79.172.242.1/32 2>/dev/null || true
-$VPP ip route add 79.172.242.1/32 via ip4-lookup-in-table "$PBR_TABLE" 2>/dev/null || true
+$VPP ip route del table "$PBR_TABLE" 79.172.242.0/24 2>/dev/null || true
+$VPP ip route add table "$PBR_TABLE" 79.172.242.0/24 via loop10 2>/dev/null || true
+if [ "$STICKY_ON" = 0 ]; then
+  $VPP ip route del 79.172.242.1/32 2>/dev/null || true
+  $VPP ip route add 79.172.242.1/32 via ip4-lookup-in-table "$PBR_TABLE" 2>/dev/null || true
+fi
 
 if [ "$OLD" != "$SRC" ] || [ "${PD_FORCE_SYNC:-0}" = 1 ]; then
   echo "pd-gre: syncing VTEP $SRC -> VPS"
@@ -116,4 +126,9 @@ if [ -x /usr/local/sbin/pd-gre-harden.sh ]; then
   /usr/local/sbin/pd-gre-harden.sh || echo "pd-gre: harden failed (non-fatal)"
 fi
 
-echo "pd-gre ready src=$SRC dst=$PD_VTEP"
+# Re-apply Digi sticky AFTER GRE/harden (boot + watchdog safe)
+if [ "$STICKY_ON" = 1 ]; then
+  /usr/local/sbin/digi-sticky-outbound.sh || echo "pd-gre: sticky reapply failed (non-fatal)"
+fi
+
+echo "pd-gre ready src=$SRC dst=$PD_VTEP sticky=$STICKY_ON"

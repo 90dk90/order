@@ -1,0 +1,15 @@
+[Unit]
+Description=Digi-only sticky max-BW egress (after PD GRE)
+After=vpp.service vpp-pppoe-native.service
+Wants=vpp.service
+# pd-gre-activate runs as ExecStartPost of vpp-pppoe-native and re-applies sticky
+# when /etc/pd/sticky-digi exists; this unit covers cold boot ordering too.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/sleep 3
+ExecStart=/usr/local/sbin/digi-sticky-outbound.sh
+
+[Install]
+WantedBy=multi-user.target

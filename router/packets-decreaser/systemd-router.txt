@@ -19,4 +19,22 @@ ExecStart=/usr/local/sbin/pd-gre-watchdog.sh
 ---
 [Service]
 ExecStartPost=/usr/local/sbin/pd-gre-activate.sh
-# pd-gre-activate.sh calls pd-gre-harden.sh (VTEP allowlist + no LAN IPv6)
+# pd-gre-activate.sh calls pd-gre-harden.sh + digi-sticky-outbound.sh when
+# /etc/pd/sticky-digi exists (VTEP allowlist, no LAN IPv6, Digi max-BW sticky).
+---
+# /etc/systemd/system/digi-sticky-outbound.service
+# Enable: systemctl enable --now digi-sticky-outbound.service
+# Flag:   touch /etc/pd/sticky-digi
+[Unit]
+Description=Digi-only sticky max-BW egress (after PD GRE)
+After=vpp.service vpp-pppoe-native.service
+Wants=vpp.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/sleep 3
+ExecStart=/usr/local/sbin/digi-sticky-outbound.sh
+
+[Install]
+WantedBy=multi-user.target
