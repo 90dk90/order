@@ -172,9 +172,8 @@ else
     "$PD_VPS_SSH" "/usr/local/sbin/pd-gre-to-digi.sh" >/dev/null 2>&1 || true
 fi
 
-# Default skip harden during bring-up races (ACL plugin SIGSEGV'd under recreate).
-# Set PD_SKIP_HARDEN=0 to force.
-if [ "${PD_SKIP_HARDEN:-1}" != 1 ] && [ -x /usr/local/sbin/pd-gre-harden.sh ]; then
+# ICMPv6-only hide (echo-request + time-exceeded). Skip with PD_SKIP_HARDEN=1.
+if [ "${PD_SKIP_HARDEN:-0}" != 1 ] && [ -x /usr/local/sbin/pd-gre-harden.sh ]; then
   /usr/local/sbin/pd-gre-harden.sh || echo "pd-gre: harden failed (non-fatal)"
 fi
 

@@ -33,9 +33,10 @@ Do **not** use synthetic `2a01:4700:80ff:ffff::` (outbound-ok, inbound blackhole
 ## Underlay
 Keep **GRE over IPv6**. Digi CGNAT IPv4 does not NAT proto 47 cleanly for DIY GRE.
 
-## Harden
-`pd-gre-harden.sh` is **off by default** (`PD_SKIP_HARDEN=1`) after ACL SIGSEGV under recreate.
-Force with `PD_SKIP_HARDEN=0`. VPS harden still runs via `pd-gre-set-vtep`.
+## Harden (ICMPv6 only)
+`pd-gre-harden.sh` drops **ICMPv6 echo-request** to Digi WAN and **time-exceeded / dest-unreach**
+(traceroute leaks). No TCP/UDP/GRE blanket deny (that ACL crashed VPP under recreate).
+On by default; skip with `PD_SKIP_HARDEN=1`. VPS side: `pd-gre-harden-vps.sh` via VTEP sync.
 
 Install Digi:
 ```bash
