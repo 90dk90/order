@@ -50,7 +50,12 @@ for iface in x520lan x520extra0 x520extra1; do
   $VPP set interface l2 bridge "$iface" "$LAN_BD" 2>/dev/null || true
   $VPP set interface state "$iface" up 2>/dev/null || true
 done
+# Ensure loop10 exists then attach as BVI (VPP 26.x)
+if ! $VPP show interface loop10 >/dev/null 2>&1; then
+  $VPP create loopback interface instance 10 2>/dev/null || true
+fi
 $VPP set interface l2 bridge loop10 "$LAN_BD" bvi 2>/dev/null || true
+$VPP set interface state loop10 up 2>/dev/null || true
 
 NEED_GRE=0
 CUR_SRC=""
