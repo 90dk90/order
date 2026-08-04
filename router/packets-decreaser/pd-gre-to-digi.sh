@@ -32,4 +32,8 @@ iptables -C FORWARD -i gre-pd -j ACCEPT 2>/dev/null || iptables -I FORWARD -i gr
 iptables -C FORWARD -o gre-pd -j ACCEPT 2>/dev/null || iptables -I FORWARD -o gre-pd -j ACCEPT
 iptables -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
   iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+if [ -x /usr/local/sbin/pd-gre-harden-vps.sh ]; then
+  /usr/local/sbin/pd-gre-harden-vps.sh || true
+fi
 echo "gre-pd ok remote=$DIGI_VTEP"

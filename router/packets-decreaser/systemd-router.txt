@@ -19,3 +19,4 @@ ExecStart=/usr/local/sbin/pd-gre-watchdog.sh
 ---
 [Service]
 ExecStartPost=/usr/local/sbin/pd-gre-activate.sh
+# pd-gre-activate.sh calls pd-gre-harden.sh (VTEP allowlist + no LAN IPv6)

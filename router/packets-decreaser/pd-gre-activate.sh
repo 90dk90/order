@@ -106,4 +106,9 @@ else
     "$PD_VPS_SSH" "/usr/local/sbin/pd-gre-to-digi.sh" >/dev/null 2>&1 || true
 fi
 
+# Hide Digi WAN VTEP / LAN IPv6 / ICMP leaks (idempotent)
+if [ -x /usr/local/sbin/pd-gre-harden.sh ]; then
+  /usr/local/sbin/pd-gre-harden.sh || echo "pd-gre: harden failed (non-fatal)"
+fi
+
 echo "pd-gre ready src=$SRC dst=$PD_VTEP"

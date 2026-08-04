@@ -33,3 +33,27 @@ Infrawire has been removed from the Digi router.
 
 ## Underlay
 Keep **GRE over IPv6** (ip6gre / VPP gre with IPv6 endpoints). Digi CGNAT IPv4 does not NAT proto 47 cleanly for DIY GRE.
+
+## Hide Digi VTEP (harden)
+`pd-gre-harden.sh` (Digi, via `pd-gre-activate`) + `pd-gre-harden-vps.sh` (VPS, via `pd-gre-to-digi`):
+
+| Goal | How |
+|------|-----|
+| Digi WAN IPv6 not pingable from Internet | VPP input ACL on `digi`: GRE + ICMPv6 only from `PD_VTEP`; deny echo-request / foreign GRE / TCP/UDP to Digi global |
+| No Digi IPv6 on LAN | Strip global IPv6 from `loop10` / `x520*` ; disable IPv6 on LAN Linux taps |
+| Less traceroute leakage | Drop ICMP time-exceeded from GRE inner / GW on Digi host + VPS |
+| No forward probes to Digi VTEP via VPS | `ip6tables` FORWARD/OUTPUT allowlist toward Digi VTEP |
+
+PD ASN / `/24` stay public once announced — that cannot be hidden.
+
+Install Digi:
+```bash
+install -m 755 pd-gre-harden.sh /usr/local/sbin/pd-gre-harden.sh
+PD_FORCE_SYNC=1 /usr/local/sbin/pd-gre-activate.sh
+```
+
+Install VPS:
+```bash
+install -m 755 pd-gre-harden-vps.sh /usr/local/sbin/pd-gre-harden-vps.sh
+/usr/local/sbin/pd-gre-to-digi.sh
+```
