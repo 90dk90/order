@@ -1,16 +1,14 @@
 [Unit]
-Description=Digi-only sticky max-BW egress (after PD GRE)
+Description=Digi sticky outbound (DISABLED — PD GRE is primary egress)
 After=vpp.service vpp-pppoe-native.service
 Wants=vpp.service vpp-pppoe-native.service
-# pd-gre-activate (ExecStartPost of vpp-pppoe-native) also re-applies sticky
-# when /etc/pd/sticky-digi exists; this unit covers cold boot ordering.
-# Mid-run recovery: pd-gre-watchdog.timer restarts pppoe + activate if digi drops.
+# Abandoned: Digi sticky (vpp-classify/tap) caused VPP SIGSEGV and LAN ARP storms.
+# All traffic uses PD GRE via pd-gre-activate.sh. Re-enable only with PD_ENABLE_STICKY=1.
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStartPre=/bin/sleep 3
-ExecStart=/usr/local/sbin/digi-sticky-outbound.sh
+ExecStart=/bin/true
 
 [Install]
 WantedBy=multi-user.target

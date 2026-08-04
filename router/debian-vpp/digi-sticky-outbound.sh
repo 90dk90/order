@@ -1,7 +1,14 @@
 #!/bin/bash
 # Digi sticky outbound — VPP-native (no ABF, no Linux L3).
 #
+# ABANDONED by default (2026-08): PD GRE is the primary egress again.
+# Opt-in only: PD_ENABLE_STICKY=1 pd-gre-activate.sh  OR  run this script manually.
 # WHY NOT ABF: abf_plugin.so SIGSEGV on BVI loop10 under traffic (VPP 26.06).
+#
+if [ "${PD_ENABLE_STICKY:-0}" != 1 ] && [ "${1:-}" != "--force" ]; then
+  echo "digi-sticky-outbound: disabled (PD-only egress). Pass --force or PD_ENABLE_STICKY=1 to run." >&2
+  exit 0
+fi
 #
 # Design (mode=vpp-classify):
 #   GW 79.172.242.1/32 on loop10 BVI / table 81 (default → gre0 / dedicated IP)
