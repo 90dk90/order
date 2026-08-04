@@ -7,15 +7,19 @@ LAN_BD="${LAN_BD:-10}"
 # Digi VTEP = pppoeclient "wan-ipv6 observed" (currently 807f/...).
 # Do NOT use synthetic 2a01:4700:80ff:... that vpp-pppoe-native may also install —
 # that prefix is outbound-ok but NOT inbound-reachable from the internet/PD.
+# Reject synthetic 80ff and placeholder <none> — Digi may publish those during bring-up.
 pick_digi_vtep() {
   obs=$($VPP show pppoe client detail 2>/dev/null | sed -n 's/.*wan-ipv6 observed \([^ /]*\).*/\1/p' | tr -d '\r' | head -1)
+  case "$obs" in
+    ""|"<none>"|none|2a01:4700:80ff:*) obs="" ;;
+  esac
   if [ -n "$obs" ]; then
     printf '%s\n' "$obs"
     return 0
   fi
-  # Fallback: prefer 807f on digi, then any Digi 2a01:4700 except 80ff
   $VPP show interface addr digi 2>/dev/null | awk '
-    /L3 2a01:4700:807f:/{gsub(/\/.*/,"",$2); print $2; exit}
+    /L3 2a01:4700:80ff:/{next}
+    /L3 2a01:4700:/{gsub(/\/.*/,"",$2); print $2; exit}
   '
 }
 
@@ -29,7 +33,13 @@ while [ $i -lt 90 ]; do
   i=$((i+1))
   sleep 2
 done
-[ -n "$SRC" ] || { echo "pd-gre: no Digi observed WAN IPv6 yet"; exit 1; }
+[ -n "$SRC" ] || { echo "pd-gre: no Digi observed WAN IPv6 yet (reject 80ff/<none>)"; exit 1; }
+
+# Never tunnel with a placeholder
+case "$SRC" in
+  ""|"<none>"|none|2a01:4700:80ff:*)
+    echo "pd-gre: refusing bad VTEP '$SRC'"; exit 1 ;;
+esac
 
 OLD=$(cat /run/pd-vtep-live.txt 2>/dev/null || true)
 printf '%s\n' "$SRC" > /run/pd-vtep-live.txt
@@ -99,12 +109,16 @@ if [ -f /etc/pd/sticky-digi ] && [ -x /usr/local/sbin/digi-sticky-outbound.sh ];
 fi
 
 $VPP set interface ip table loop10 "$PBR_TABLE" 2>/dev/null || true
-# Linux sticky owns .1 on vpp-sticky; VPP-native (vpp-classify / vpp-abf-*) owns .1 on loop10
+# Linux sticky owns .1 on vpp-sticky; VPP-native owns .1/32 on loop10 (never /24 —
+# connected /24 + "via loop10" glean ARPs the whole announced prefix → LAN jitter).
 if [ "$STICKY_MODE" = "linux" ]; then
   $VPP set interface ip address del loop10 79.172.242.1/24 2>/dev/null || true
+  $VPP set interface ip address del loop10 79.172.242.1/32 2>/dev/null || true
 else
-  $VPP set interface ip address del loop10 79.172.242.1/24 2>/dev/null || true
-  $VPP set interface ip address loop10 79.172.242.1/24 2>/dev/null || true
+  # Must clear addresses before (re)binding VRF, else VPP rejects ip table change.
+  $VPP set interface ip address del loop10 all 2>/dev/null || true
+  $VPP set interface ip table loop10 "$PBR_TABLE" 2>/dev/null || true
+  $VPP set interface ip address loop10 79.172.242.1/32 2>/dev/null || true
 fi
 $VPP set interface state loop10 up 2>/dev/null || true
 $VPP set interface tcp-mss-clamp loop10 ip4 disable ip6 disable 2>/dev/null || true
@@ -114,13 +128,17 @@ $VPP set interface l2-mss-clamp x520lan disable 2>/dev/null || true
 
 $VPP ip route del table "$PBR_TABLE" 0.0.0.0/0 2>/dev/null || true
 $VPP ip route add table "$PBR_TABLE" 0.0.0.0/0 via "$INNER_PEER" gre0 2>/dev/null || true
+# Do NOT install "79.172.242.0/24 via loop10" (glean/ARP storm). Sticky reapply
+# installs /32 hosts + /24 via drop in table 81 and deag from table 0.
+$VPP ip route del 79.172.242.0/24 via loop10 2>/dev/null || true
 $VPP ip route del 79.172.242.0/24 2>/dev/null || true
-$VPP ip route add 79.172.242.0/24 via loop10 2>/dev/null || true
+$VPP ip route del table "$PBR_TABLE" 79.172.242.0/24 via loop10 2>/dev/null || true
 $VPP ip route del table "$PBR_TABLE" 79.172.242.0/24 2>/dev/null || true
-$VPP ip route add table "$PBR_TABLE" 79.172.242.0/24 via loop10 2>/dev/null || true
 if [ "$STICKY_MODE" != "linux" ]; then
   $VPP ip route del 79.172.242.1/32 2>/dev/null || true
   $VPP ip route add 79.172.242.1/32 via ip4-lookup-in-table "$PBR_TABLE" 2>/dev/null || true
+  $VPP ip route add 79.172.242.0/24 via ip4-lookup-in-table "$PBR_TABLE" 2>/dev/null || true
+  $VPP ip route add table "$PBR_TABLE" 79.172.242.0/24 via drop 2>/dev/null || true
 fi
 
 if [ "$OLD" != "$SRC" ] || [ "${PD_FORCE_SYNC:-0}" = 1 ]; then
@@ -133,7 +151,8 @@ else
 fi
 
 # Hide Digi WAN VTEP / LAN IPv6 / ICMP leaks (idempotent)
-if [ -x /usr/local/sbin/pd-gre-harden.sh ]; then
+# Skip when PD_SKIP_HARDEN=1 (ACL plugin has SIGSEGV'd under recreate races).
+if [ "${PD_SKIP_HARDEN:-0}" != 1 ] && [ -x /usr/local/sbin/pd-gre-harden.sh ]; then
   /usr/local/sbin/pd-gre-harden.sh || echo "pd-gre: harden failed (non-fatal)"
 fi
 

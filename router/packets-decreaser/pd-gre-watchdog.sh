@@ -34,7 +34,12 @@ if [ -f /etc/pd/sticky-digi ]; then
   MODE=$(sed -n 's/^mode=//p' /etc/pd/sticky-digi 2>/dev/null | head -1)
   if [ "$MODE" = "vpp-classify" ] || [ "$MODE" = "vpp-abf-hairpin" ]; then
     $VPP show interface features loop10 2>/dev/null | grep -q ip4-inacl || STICKY_OK=0
-    $VPP show interface address loop10 2>/dev/null | grep -q '79.172.242.1/24' || STICKY_OK=0
+    # Accept /32 (preferred) or legacy /24 — never force /24 (ARP storm)
+    $VPP show interface address loop10 2>/dev/null | grep -qE '79\.172\.242\.1/(32|24)' || STICKY_OK=0
+    # Regress if table 0 still gleams the /24 (causes LAN ARP flood)
+    if $VPP show ip fib table 0 79.172.242.0/24 2>/dev/null | grep -q 'ipv4-glean'; then
+      STICKY_OK=0
+    fi
   fi
 fi
 
