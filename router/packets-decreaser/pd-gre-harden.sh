@@ -22,13 +22,7 @@ pick_digi_vtep() {
     printf '%s\n' "$obs"
     return 0
   fi
-  if [ -r /run/pd-vtep-live.txt ]; then
-    cand=$(head -1 /run/pd-vtep-live.txt)
-    case "$cand" in
-      ""|"<none>"|2a01:4700:80ff:*) ;;
-      *) printf '%s\n' "$cand"; return 0 ;;
-    esac
-  fi
+  # Only use interface L3 (must actually be present) — ignore stale /run files
   $VPP show interface addr "$DIGI_IF" 2>/dev/null | awk '
     /L3 2a01:4700:80ff:/{next}
     /L3 2a01:4700:/{gsub(/\/.*/,"",$2); print $2; exit}
