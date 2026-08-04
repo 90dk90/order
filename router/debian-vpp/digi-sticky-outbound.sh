@@ -5,10 +5,12 @@
 #     TCP SYN (client NEW)  → Digi PPPoE + NAT44 (10G)
 #     else (SYN-ACK/UDP/ICMP, inbound service replies) → GRE/PD
 #
-# VPP-native ABF blocked on VPP 26.06 here:
-#   - abf attach on BVI loop10 → VPP segfault/restart
-#   - abf on non-BVI tap with .1 → tap is not IRB (no transit L3)
-# Keep Linux hairpin until ABF-on-BVI is fixed or a true IRB path exists.
+# VPP-native status (see vpp-native-sticky-research.sh):
+#   - ABF-on-BVI can work when clean; crashes seen were dirty-state/NAT misuse
+#   - classify set-ip4-fib-id and ACL-on-BVI are stable alternatives to ABF
+#   - stickiness still needs permit+reflect / conntrack (SYN-only is not enough)
+#   - non-BVI tap as .1 cannot IRB-route; GW cutover needs GARP
+#   - production stays on this Linux hairpin until the prototype above is proven
 set -euo pipefail
 VPP="${VPP:-/usr/bin/vppctl -s /run/vpp/cli.sock}"
 LAN_BD="${LAN_BD:-10}"
@@ -70,6 +72,10 @@ $VPP set interface ip address loop10 79.172.242.254/32 2>/dev/null || true
 ip link set "$STICKY_IF" up
 ip addr del 79.172.242.253/24 dev "$STICKY_IF" 2>/dev/null || true
 ip addr replace "${LAN_GW}/24" dev "$STICKY_IF"
+# Announce GW MAC so LAN hosts (PVE) drop stale neigh after cutovers
+if command -v arping >/dev/null 2>&1; then
+  arping -c 2 -U -I "$STICKY_IF" "$LAN_GW" >/dev/null 2>&1 || true
+fi
 sysctl -q -w net.ipv4.conf."$STICKY_IF".forwarding=1
 
 ensure_tap "$OUT_ID" "$OUT_IF" 4 4 4096
