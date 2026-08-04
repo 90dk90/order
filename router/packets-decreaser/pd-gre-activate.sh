@@ -85,12 +85,20 @@ $VPP set interface tcp-mss-clamp gre0 ip4 disable ip6 disable 2>/dev/null || tru
 $VPP set interface l2-mss-clamp gre0 disable 2>/dev/null || true
 
 STICKY_ON=0
-[ -f /etc/pd/sticky-digi ] && [ -x /usr/local/sbin/digi-sticky-outbound.sh ] && STICKY_ON=1
+STICKY_MODE=none
+if [ -f /etc/pd/sticky-digi ] && [ -x /usr/local/sbin/digi-sticky-outbound.sh ]; then
+  STICKY_ON=1
+  STICKY_MODE=$(sed -n 's/^mode=//p' /etc/pd/sticky-digi 2>/dev/null | head -1)
+  # Legacy flag was an empty touch → Linux hairpin owned .1
+  [ -z "$STICKY_MODE" ] && STICKY_MODE=linux
+fi
 
-$VPP set interface ip address del loop10 79.172.242.1/24 2>/dev/null || true
 $VPP set interface ip table loop10 "$PBR_TABLE" 2>/dev/null || true
-# Linux sticky owns .1 on vpp-sticky — do not put .1 on loop10 when sticky on
-if [ "$STICKY_ON" = 0 ]; then
+# Linux sticky owns .1 on vpp-sticky; VPP-native sticky owns .1 on loop10 BVI
+if [ "$STICKY_MODE" = "linux" ]; then
+  $VPP set interface ip address del loop10 79.172.242.1/24 2>/dev/null || true
+else
+  $VPP set interface ip address del loop10 79.172.242.1/24 2>/dev/null || true
   $VPP set interface ip address loop10 79.172.242.1/24 2>/dev/null || true
 fi
 $VPP set interface state loop10 up 2>/dev/null || true
@@ -105,7 +113,7 @@ $VPP ip route del 79.172.242.0/24 2>/dev/null || true
 $VPP ip route add 79.172.242.0/24 via loop10 2>/dev/null || true
 $VPP ip route del table "$PBR_TABLE" 79.172.242.0/24 2>/dev/null || true
 $VPP ip route add table "$PBR_TABLE" 79.172.242.0/24 via loop10 2>/dev/null || true
-if [ "$STICKY_ON" = 0 ]; then
+if [ "$STICKY_MODE" != "linux" ]; then
   $VPP ip route del 79.172.242.1/32 2>/dev/null || true
   $VPP ip route add 79.172.242.1/32 via ip4-lookup-in-table "$PBR_TABLE" 2>/dev/null || true
 fi
@@ -129,4 +137,4 @@ if [ "$STICKY_ON" = 1 ]; then
   /usr/local/sbin/digi-sticky-outbound.sh || echo "pd-gre: sticky reapply failed (non-fatal)"
 fi
 
-echo "pd-gre ready src=$SRC dst=$PD_VTEP sticky=$STICKY_ON"
+echo "pd-gre ready src=$SRC dst=$PD_VTEP sticky=$STICKY_ON mode=$STICKY_MODE"

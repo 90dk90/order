@@ -1,6 +1,12 @@
 #!/bin/bash
-# Research notes + next prototype for Digi VPP-native sticky (Aug 2026).
-# Production sticky remains: digi-sticky-outbound.sh (Linux L3 hairpin).
+# Research notes + prototype for Digi VPP-native sticky (Aug 2026).
+# Production path: digi-sticky-outbound.sh (mode=vpp-abf-hairpin).
+# Fallback:      digi-sticky-outbound-linux.sh (mode=linux).
+#
+# Architecture (VPP-native):
+#   .1 on loop10 BVI / table 81 → default GRE
+#   ABF permit+reflect SYN (tcpflags 2 mask 18) → tap80 ──L2 bridge── tap81 → NAT44 → digi
+#   else → FIB → gre0
 #
 # =============================================================================
 # GOAL
