@@ -33,6 +33,12 @@ iptables -C FORWARD -o gre-pd -j ACCEPT 2>/dev/null || iptables -I FORWARD -o gr
 iptables -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
   iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
 
+# Outbound from dedicated /24 must SNAT on the VPS uplink: without this, SYN/ICMP
+# leave eth0 with src 79.172.242.0/24 toward PD next-hop and never get replies
+# (inbound to the /24 still works). Digi↔GRE path is fine; this is egress on eth0.
+iptables -t nat -C POSTROUTING -s 79.172.242.0/24 -o eth0 -j MASQUERADE 2>/dev/null || \
+  iptables -t nat -I POSTROUTING 1 -s 79.172.242.0/24 -o eth0 -j MASQUERADE
+
 if [ -x /usr/local/sbin/pd-gre-harden-vps.sh ]; then
   /usr/local/sbin/pd-gre-harden-vps.sh || true
 fi
