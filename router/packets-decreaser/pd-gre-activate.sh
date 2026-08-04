@@ -57,6 +57,11 @@ fi
 $VPP set interface l2 bridge loop10 "$LAN_BD" bvi 2>/dev/null || true
 $VPP set interface state loop10 up 2>/dev/null || true
 
+# Drop carrier-down extras from BD10 (flood→tx-error/jitter)
+if [ -x /usr/local/sbin/vpp-lan-bridge-prune.sh ]; then
+  /usr/local/sbin/vpp-lan-bridge-prune.sh || true
+fi
+
 NEED_GRE=0
 CUR_SRC=""
 if ! $VPP show interface gre0 >/dev/null 2>&1; then
