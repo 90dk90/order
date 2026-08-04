@@ -5,8 +5,10 @@
 #     TCP SYN (client NEW)  → Digi PPPoE + NAT44 (10G)
 #     else (SYN-ACK/UDP/ICMP, inbound service replies) → GRE/PD
 #
-# Note: VPP-native ABF path is WIP (abf via digi hop empty on pppox).
-# This Linux hairpin is the production path until ABF+pppox is solid.
+# VPP-native ABF blocked on VPP 26.06 here:
+#   - abf attach on BVI loop10 → VPP segfault/restart
+#   - abf on non-BVI tap with .1 → tap is not IRB (no transit L3)
+# Keep Linux hairpin until ABF-on-BVI is fixed or a true IRB path exists.
 set -euo pipefail
 VPP="${VPP:-/usr/bin/vppctl -s /run/vpp/cli.sock}"
 LAN_BD="${LAN_BD:-10}"
