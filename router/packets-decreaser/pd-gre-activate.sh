@@ -94,7 +94,7 @@ if [ -f /etc/pd/sticky-digi ] && [ -x /usr/local/sbin/digi-sticky-outbound.sh ];
 fi
 
 $VPP set interface ip table loop10 "$PBR_TABLE" 2>/dev/null || true
-# Linux sticky owns .1 on vpp-sticky; VPP-native sticky owns .1 on loop10 BVI
+# Linux sticky owns .1 on vpp-sticky; VPP-native (vpp-classify / vpp-abf-*) owns .1 on loop10
 if [ "$STICKY_MODE" = "linux" ]; then
   $VPP set interface ip address del loop10 79.172.242.1/24 2>/dev/null || true
 else
