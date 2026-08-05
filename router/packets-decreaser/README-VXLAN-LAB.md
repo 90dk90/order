@@ -51,3 +51,19 @@ DIGI_PROX_PUB=$(cat /run/pd-vpp-prox-pub.txt)  # from Digi
 Path: `host ↔ VPP table 81 ↔ loop208/VXLAN ↔ tap36 → Linux SNAT → Proximus → VPS vxlan-lab ↔ BGP`.
 
 Linux keeps `192.168.129.7` (Tailscale). VXLAN SNAT/UPnP uses `192.168.129.8`.
+
+## Pre-PPPoE validation scorecard (2026-08-05)
+
+| Check | Result |
+|---|---|
+| PPPoE masked, `x520wan` admin-down by policy | OK |
+| `vxlan_plugin` loaded, tunnel Digi↔VPS | OK |
+| `/24` `.1`/`.2` + egress `1.1.1.1` table 81 | OK |
+| VPP VXLAN outer **UDP sport entropy** (multi-flow) | OK (≠ fixed like GRE) |
+| Scripts idempotent (`pd-vpp-prox-vxlan.sh`) | OK |
+| `x520wan` 4 RX queues + workers placed | OK |
+| `x520wan` RSS **activates on admin-up** (`ipv4-udp` included) | OK |
+| af_packet on `enp36s0` | FAIL (SEGV in `ethernet_input`) — do not use |
+| Digi PPPoE session / WAN IPv6 | **needs PPPoE** |
+| RSS multi-queue counters under Digi load | **needs PPPoE** (traffic on `x520wan`) |
+| GRE6 vs VXLAN throughput on Digi | **needs PPPoE** |
