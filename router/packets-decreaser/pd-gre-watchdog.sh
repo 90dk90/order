@@ -22,8 +22,19 @@ fi
 
 # LAN can be prepared without Digi global IPv6
 if [ -x /usr/local/sbin/pd-lan-prepare.sh ]; then
+  LAN_NEED=0
   if ! $VPP show interface address loop10 2>/dev/null | grep -qE '79\.172\.242\.1/32' \
     || $VPP show ip fib table 0 79.172.242.0/24 2>/dev/null | grep -q 'ipv4-glean'; then
+    LAN_NEED=1
+  else
+    # Catch adjacency-only /32s (forwarding UNRESOLVED → covering /24 drop blackholes PVE)
+    for hip in 79.172.242.2 79.172.242.3 79.172.242.10; do
+      fib=$($VPP show ip fib table 81 "${hip}/32" 2>/dev/null | tr -d '\r')
+      echo "$fib" | grep -q 'CLI refs:.*contributing,active,' || LAN_NEED=1
+      echo "$fib" | grep -q 'forwarding:   UNRESOLVED' && LAN_NEED=1
+    done
+  fi
+  if [ "$LAN_NEED" = 1 ]; then
     /usr/local/sbin/pd-lan-prepare.sh >/dev/null 2>&1 || true
   fi
 fi
@@ -51,6 +62,11 @@ $VPP show interface address loop10 2>/dev/null | grep -qE '79\.172\.242\.1/32' |
 if $VPP show ip fib table 0 79.172.242.0/24 2>/dev/null | grep -q 'ipv4-glean'; then
   LAN_OK=0
 fi
+for hip in 79.172.242.2 79.172.242.3 79.172.242.10; do
+  fib=$($VPP show ip fib table 81 "${hip}/32" 2>/dev/null | tr -d '\r')
+  echo "$fib" | grep -q 'CLI refs:.*contributing,active,' || LAN_OK=0
+  echo "$fib" | grep -q 'forwarding:   UNRESOLVED' && LAN_OK=0
+done
 
 if [ "$OLD" != "$SRC" ] || [ "$GRE_OK" = 0 ] || [ "$LAN_OK" = 0 ]; then
   logger -t pd-gre-watchdog "reactivate old=${OLD:-none} new=$SRC gre_ok=$GRE_OK lan_ok=$LAN_OK"

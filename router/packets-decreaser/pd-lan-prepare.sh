@@ -13,15 +13,26 @@ LAN_HOSTS="${LAN_HOSTS:-79.172.242.2:c4:62:37:0d:2f:96 79.172.242.3:c4:62:37:0d:
 
 $VPP show version >/dev/null
 
+# Host /32 is OK only if CLI route contributes a real forwarding chain.
+# Adjacency-only entries can show "via" yet "forwarding: UNRESOLVED", and then
+# traffic hits the covering ${LAN_PREFIX} drop (PVE looks "down" after Digi reboot).
+host_route_ok() {
+  ip="$1"
+  fib=$($VPP show ip fib table "$PBR_TABLE" "${ip}/32" 2>/dev/null | tr -d '\r')
+  echo "$fib" | grep -q 'CLI refs:.*contributing,active,' || return 1
+  echo "$fib" | grep -q 'forwarding:   UNRESOLVED' && return 1
+  echo "$fib" | grep -q 'dpo-load-balance' || return 1
+  return 0
+}
+
 # Already correct → exit quietly (no FIB churn)
 if $VPP show interface addr loop10 2>/dev/null | tr -d '\r' | grep -q "${LAN_GW}/32" \
   && $VPP show interface addr loop10 2>/dev/null | tr -d '\r' | grep -q "table-id ${PBR_TABLE}" \
   && ! $VPP show ip fib table 0 "$LAN_PREFIX" 2>/dev/null | tr -d '\r' | grep -q 'ipv4-glean'; then
-  # Ensure known host /32s exist; if any missing, fall through to repair
   missing=0
   for entry in $LAN_HOSTS; do
     ip="${entry%%:*}"
-    $VPP show ip fib table "$PBR_TABLE" "${ip}/32" 2>/dev/null | tr -d '\r' | grep -q 'via' || missing=1
+    host_route_ok "$ip" || missing=1
   done
   if [ "$missing" = 0 ]; then
     echo "pd-lan-prepare: already OK — skip"
@@ -68,7 +79,8 @@ for entry in $LAN_HOSTS; do
     *:*) mac="${entry#*:}" ;;
   esac
   [ -n "$mac" ] && $VPP set ip neighbor loop10 "$ip" "$mac" static 2>/dev/null || true
-  if ! $VPP show ip fib table "$PBR_TABLE" "${ip}/32" 2>/dev/null | tr -d '\r' | grep -q 'via'; then
+  if ! host_route_ok "$ip"; then
+    $VPP ip route del table "$PBR_TABLE" "${ip}/32" 2>/dev/null || true
     $VPP ip route add table "$PBR_TABLE" "${ip}/32" via "$ip" loop10 2>/dev/null || true
   fi
   if ! $VPP show ip fib table 0 "${ip}/32" 2>/dev/null | tr -d '\r' | grep -q 'ip4-lookup-in-table'; then
