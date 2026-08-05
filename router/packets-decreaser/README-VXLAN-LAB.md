@@ -63,6 +63,7 @@ Path: `host ↔ VPP table 81 ↔ loop208/VXLAN209 ↔ Digi IPv6 (x520wan/pppoe) 
 | `x520wan` RSS **activates on admin-up** (`ipv4-udp` included) | OK |
 | af_packet on `enp36s0` | FAIL (SEGV in `ethernet_input`) — do not use |
 | Digi PPPoE session / WAN IPv6 | **OK** after ABI248 patch + `PD_ALLOW_PPPOE_RESTART=1 pd-pppoe-enable-once.sh` |
+| RSS multi-queue on `x520wan` | **Blocked by PPPoE**: NIC sees ethertype `0x8864`, `rss=0x0` → 100% `rx_q0`. Use `pd-rss-tune.sh` (poll q0 only, free other workers). |
 | RSS multi-queue counters under Digi load | **needs PPPoE** (traffic on `x520wan`) |
 | GRE6 vs VXLAN throughput on Digi | N/A — GRE retired |
 

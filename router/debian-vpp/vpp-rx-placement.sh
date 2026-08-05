@@ -1,11 +1,19 @@
 #!/bin/sh
-# RX placement for Digi PD path.
-# GRE/IPv6 outer 5-tuple is constant → NIC RSS pins almost all traffic to queue 0.
-# Put lan-q0 and wan-q0 on DIFFERENT workers so upload + download don't share one core.
-# x520extra* stay down + interrupt; taps interrupt (no poll tax).
+# RX placement for Digi PD path (PPPoE-aware).
+#
+# Digi WAN is PPPoE (ethertype 0x8864): NIC RSS cannot see inner IPv6/UDP, so
+# hardware multi-queue RX does not spread on x520wan. Prefer pd-rss-tune.sh
+# (q0 polling only + dedicated workers). This script remains the bootstrap
+# fallback and mirrors that policy.
 set -eu
 
 VPP="/usr/bin/vppctl -s /run/vpp/cli.sock"
+
+if [ -x /usr/local/sbin/pd-rss-tune.sh ]; then
+  /usr/local/sbin/pd-rss-tune.sh
+  exit 0
+fi
+
 QUEUES="0 1 2 3"
 
 for iface in x520extra0 x520extra1; do
@@ -16,34 +24,18 @@ for iface in x520extra0 x520extra1; do
 done
 
 for iface in x520wan x520lan; do
-  for queue in $QUEUES; do
-    $VPP set interface rx-mode "$iface" queue "$queue" polling 2>/dev/null || true
+  $VPP set interface rss queues "$iface" list 0 1 2 3 2>/dev/null || true
+  $VPP set interface rx-mode "$iface" queue 0 polling 2>/dev/null || true
+  for queue in 1 2 3; do
+    $VPP set interface rx-mode "$iface" queue "$queue" interrupt 2>/dev/null || true
   done
 done
 
-# Hot queues (RSS q0): split across workers
 $VPP set interface rx-placement x520lan queue 0 worker 0 2>/dev/null || true
 $VPP set interface rx-placement x520wan queue 0 worker 1 2>/dev/null || true
-# Cold queues (rarely used for GRE) — spread remainder
 $VPP set interface rx-placement x520lan queue 1 worker 2 2>/dev/null || true
 $VPP set interface rx-placement x520wan queue 1 worker 2 2>/dev/null || true
 $VPP set interface rx-placement x520lan queue 2 worker 3 2>/dev/null || true
 $VPP set interface rx-placement x520wan queue 2 worker 3 2>/dev/null || true
 $VPP set interface rx-placement x520lan queue 3 worker 3 2>/dev/null || true
 $VPP set interface rx-placement x520wan queue 3 worker 0 2>/dev/null || true
-
-if $VPP show interface 2>/dev/null | grep -q '^tap20[[:space:]]'; then
-  for queue in $QUEUES; do
-    $VPP set interface rx-mode tap20 queue "$queue" interrupt 2>/dev/null || true
-  done
-fi
-if $VPP show interface 2>/dev/null | grep -q '^tap30[[:space:]]'; then
-  for queue in $QUEUES; do
-    $VPP set interface rx-mode tap30 queue "$queue" interrupt 2>/dev/null || true
-  done
-fi
-if $VPP show interface 2>/dev/null | grep -q '^tun4096[[:space:]]'; then
-  for queue in $QUEUES; do
-    $VPP set interface rx-mode tun4096 queue "$queue" interrupt 2>/dev/null || true
-  done
-fi
