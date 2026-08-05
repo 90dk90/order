@@ -38,20 +38,17 @@ Linux GPE requires `external` (not simple P2P). Classic VXLAN interops both side
 
 PD transport is **VXLAN only** — no GRE fallback.
 
-- **Now:** Digi VPP VXLAN over Proximus interim (`tap36→Linux`) while PPPoE off
-- **Next:** Digi PPPoE up → `pd-vpp-digi-vxlan-cutover.sh` → underlay Digi IPv6 on `x520wan`
+- **Live now:** Digi VPP VXLAN over **Digi PPPoE IPv6** (`vxlan_tunnel209`, VTEP observed wan-ipv6)
+- Proximus interim tunnel/tap torn after soft cutover (`PD_CUTOVER_TEAR_OLD=1`)
 
 ```bash
-# Current (Proximus interim)
-/usr/local/sbin/pd-vpp-prox-vxlan-activate.sh
-/usr/local/sbin/pd-vpp-prox-vxlan-vps.sh
-
-# Later (Digi underlay — after PPPoE + global IPv6)
+# Soft Digi cutover (no VPP/PPPoE restart)
 /usr/local/sbin/pd-vpp-digi-vxlan-cutover.sh
 DIGI_VTEP=<digi-wan-ipv6> /usr/local/sbin/pd-vpp-digi-vxlan-vps.sh
+PD_CUTOVER_TEAR_OLD=1 /usr/local/sbin/pd-vpp-digi-vxlan-cutover.sh
 ```
 
-Path (interim): `host ↔ VPP table 81 ↔ loop208/VXLAN ↔ tap36 → Linux SNAT → Proximus → VPS`.
+Path: `host ↔ VPP table 81 ↔ loop208/VXLAN209 ↔ Digi IPv6 (x520wan/pppoe) → VPS`.
 
 ## Pre-PPPoE validation scorecard (2026-08-05)
 

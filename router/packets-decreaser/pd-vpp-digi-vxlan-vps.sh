@@ -1,9 +1,17 @@
 #!/bin/bash
 # VPS: peer Digi VPP VXLAN over Digi IPv6 underlay (VXLAN only, no gre-pd).
 set -euo pipefail
+# Capture CLI/env override BEFORE sourcing conf files that may carry a stale Digi VTEP.
+CLI_DIGI_VTEP="${DIGI_VTEP:-}"
 . /etc/pd-vxlan-lab.conf 2>/dev/null || . /etc/pd/pd-vxlan-lab.conf 2>/dev/null || \
   . "$(dirname "$0")/pd-vxlan-lab.conf"
+. /etc/pd/digi-vtep.env 2>/dev/null || true
 . /etc/pd-gre.env 2>/dev/null || true
+# Prefer: explicit CLI → /run live file → conf DIGI_VTEP
+if [ -z "$CLI_DIGI_VTEP" ] && [ -f /run/pd-digi-vtep.txt ]; then
+  CLI_DIGI_VTEP=$(tr -d ' \r\n' </run/pd-digi-vtep.txt)
+fi
+DIGI_VTEP="${CLI_DIGI_VTEP:-${DIGI_VTEP:-}}"
 
 IFACE=vxlan-lab
 VNI="${VXLAN_VNI:-100}"

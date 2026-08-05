@@ -7,16 +7,19 @@ set -euo pipefail
 VPP="${VPP:-/usr/bin/vppctl}"
 MSS="${PD_VXLAN_MSS:-1360}"
 LAB_LOOP="${LAB_LOOP:-loop208}"
-IFACE="vxlan_tunnel${LAB_VXLAN_INSTANCE:-208}"
+# Clamp BVI + current Digi instance (209 after cutover) + legacy 208 if still present + LAN BVI
+IFACES="$LAB_LOOP loop10"
+IFACES="$IFACES vxlan_tunnel${DIGI_VXLAN_INSTANCE:-209}"
+IFACES="$IFACES vxlan_tunnel${LAB_VXLAN_INSTANCE:-208}"
 
 $VPP show version >/dev/null
 
-for iface in "$LAB_LOOP" "$IFACE" loop10; do
+for iface in $IFACES; do
   if $VPP show interface 2>/dev/null | awk -v n="$iface" '$1==n{f=1} END{exit !f}'; then
     $VPP set interface l2-mss-clamp "$iface" mss "$MSS" enable 2>/dev/null || \
       $VPP set interface l2-mss-clamp "$iface" enable 2>/dev/null || true
   fi
 done
 
-echo "pd-vpp-vxlan-mss: mss=$MSS on $LAB_LOOP $IFACE loop10 (no VPP/PPPoE restart)"
+echo "pd-vpp-vxlan-mss: mss=$MSS on present ifaces among: $IFACES (no VPP/PPPoE restart)"
 $VPP show l2-mss-clamp 2>/dev/null || true
