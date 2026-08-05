@@ -1,13 +1,13 @@
 #!/bin/bash
-# Only known dedicated hosts enter gre-pd; rest of announced /24 is blackholed on the VPS.
-# BGP still announces 79.172.242.0/24 — scanners die here instead of saturating Digi FOU.
+# Route full dedicated /24 into gre-pd (no blackhole).
+# BGP announces 79.172.242.0/24; all addresses are reachable via Digi when GRE is up.
 set -euo pipefail
 ENV=/etc/pd-gre.env
 [ -f "$ENV" ] && . "$ENV"
 PEER="${INNER_PEER:-172.16.207.2}"
-HOSTS="${PD_LAN_HOSTS:-79.172.242.1 79.172.242.2 79.172.242.3 79.172.242.10}"
-ip route replace blackhole 79.172.242.0/24
-for h in $HOSTS; do
-  ip route replace "$h/32" via "$PEER" dev gre-pd
+ip route del blackhole 79.172.242.0/24 2>/dev/null || true
+for h in 79.172.242.1 79.172.242.2 79.172.242.3 79.172.242.10; do
+  ip route del "$h/32" 2>/dev/null || true
 done
-echo "pd-gre-lan-hosts: blackhole /24 + hosts -> gre-pd ($HOSTS)"
+ip route replace 79.172.242.0/24 via "$PEER" dev gre-pd
+echo "pd-gre-lan-hosts: 79.172.242.0/24 via $PEER gre-pd (full prefix)"

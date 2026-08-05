@@ -65,14 +65,12 @@ fi
 
 ip addr replace "$INNER_LOCAL" dev gre-pd 2>/dev/null || true
 ip link set gre-pd mtu "$MTU" up
-# Do NOT route the whole /24 into GRE — internet scanners (~2kpps) saturate Proximus FOU.
-# Blackhole /24 locally; only known hosts get /32 via gre-pd (BGP still announces /24).
+# Full dedicated /24 into GRE (Infrawire / Digi VPP underlay can absorb scan noise)
+ip route del blackhole 79.172.242.0/24 2>/dev/null || true
 if [ -x /usr/local/sbin/pd-gre-lan-hosts.sh ]; then
   /usr/local/sbin/pd-gre-lan-hosts.sh
 else
-  ip route replace blackhole 79.172.242.0/24
-  ip route replace 79.172.242.1/32 via "$INNER_PEER" dev gre-pd
-  ip route replace 79.172.242.2/32 via "$INNER_PEER" dev gre-pd
+  ip route replace 79.172.242.0/24 via "$INNER_PEER" dev gre-pd
 fi
 
 sysctl -q -w net.ipv4.ip_forward=1
