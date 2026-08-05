@@ -72,8 +72,8 @@ else
   ip route replace 79.172.242.0/24 via "$INNER_PEER" dev gre-pd
 fi
 
-# CAKE under Digi capacity — kills Digi PPPoE bufferbloat (latency spikes under load)
-if [ -x /usr/local/sbin/pd-gre-shape-cake.sh ]; then
+# CAKE under Digi capacity — OPT-IN only (PD_SHAPE=1). Default off = max Digi rate.
+if [ "${PD_SHAPE:-0}" = 1 ] && [ -x /usr/local/sbin/pd-gre-shape-cake.sh ]; then
   /usr/local/sbin/pd-gre-shape-cake.sh || true
 fi
 

@@ -11,11 +11,13 @@ set -euo pipefail
 ENV=/etc/pd-gre.env
 [ -f "$ENV" ] && . "$ENV"
 
-PD_SHAPE="${PD_SHAPE:-1}"
+PD_SHAPE="${PD_SHAPE:-0}"
 DIGI_DOWN_MBIT="${DIGI_DOWN_MBIT:-850}"
 DIGI_UP_MBIT="${DIGI_UP_MBIT:-80}"
 IFACE="${PD_SHAPE_IFACE:-gre-pd}"
 IFB="${PD_SHAPE_IFB:-ifb-pd}"
+
+# Default OFF — max Digi throughput. Opt-in only when trading ~5% rate for latency.
 
 if [ "$PD_SHAPE" = 0 ]; then
   tc qdisc del dev "$IFACE" root 2>/dev/null || true
