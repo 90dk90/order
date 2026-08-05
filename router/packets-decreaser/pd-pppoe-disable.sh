@@ -22,11 +22,13 @@ ip rule del iif vpp-vxlan-lab table 208 2>/dev/null || true
 ip route flush table 208 2>/dev/null || true
 ip route del 79.172.242.0/24 via 10.255.208.1 2>/dev/null || true
 
-# Mode flag for bootstrap
+# Mode flag for bootstrap / cutover
 mkdir -p /etc/default
 cat >/etc/default/pd-underlay <<'EOF'
-# proximus-vpp: VXLAN in VPP over Proximus (enp36s0). Digi PPPoE disabled.
+# VXLAN only (GRE retired). Interim Proximus underlay until Digi PPPoE cutover.
 PD_UNDERLAY=proximus-vpp
+PD_TRANSPORT=vxlan
+PD_GRE=0
 PD_PPPOE=0
 EOF
 

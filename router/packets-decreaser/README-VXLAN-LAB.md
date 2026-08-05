@@ -34,23 +34,24 @@ Linux GPE requires `external` (not simple P2P). Classic VXLAN interops both side
 - `rx_q1/q2/q3` non-zero under multi-flow lab traffic
 - GRE path still healthy on 172.16.207.0/30
 
-## Mode: Proximus VPP VXLAN (PPPoE disabled)
+## Mode: VXLAN only (GRE retired)
 
-Current path: **VXLAN encapsulation inside VPP**, outer underlay via Proximus.
-Digi PPPoE is masked (`x520wan` down). Do not use `af_packet` on `enp36s0` —
-it SIGSEGVs VPP 26.06 on this Digi; underlay is `tap36 ↔ Linux ↔ enp36s0` instead.
+PD transport is **VXLAN only** — no GRE fallback.
+
+- **Now:** Digi VPP VXLAN over Proximus interim (`tap36→Linux`) while PPPoE off
+- **Next:** Digi PPPoE up → `pd-vpp-digi-vxlan-cutover.sh` → underlay Digi IPv6 on `x520wan`
 
 ```bash
-# Digi (loads vxlan_plugin once, disables PPPoE)
+# Current (Proximus interim)
 /usr/local/sbin/pd-vpp-prox-vxlan-activate.sh
-# VPS
-DIGI_PROX_PUB=$(cat /run/pd-vpp-prox-pub.txt)  # from Digi
 /usr/local/sbin/pd-vpp-prox-vxlan-vps.sh
+
+# Later (Digi underlay — after PPPoE + global IPv6)
+/usr/local/sbin/pd-vpp-digi-vxlan-cutover.sh
+DIGI_VTEP=<digi-wan-ipv6> /usr/local/sbin/pd-vpp-digi-vxlan-vps.sh
 ```
 
-Path: `host ↔ VPP table 81 ↔ loop208/VXLAN ↔ tap36 → Linux SNAT → Proximus → VPS vxlan-lab ↔ BGP`.
-
-Linux keeps `192.168.129.7` (Tailscale). VXLAN SNAT/UPnP uses `192.168.129.8`.
+Path (interim): `host ↔ VPP table 81 ↔ loop208/VXLAN ↔ tap36 → Linux SNAT → Proximus → VPS`.
 
 ## Pre-PPPoE validation scorecard (2026-08-05)
 
