@@ -90,8 +90,9 @@ Path: `host ↔ VPP table 81 ↔ loop208/VXLAN209 ↔ Digi IPv6 (x520wan/pppoe) 
 - Fix: ABI248 binary patch (not a newer unmatched deb — no 26.06-release package exists)
 - After patch + VPP reload: `PPPOE_CLIENT_SESSION`, Digi IPv6 observed, soft `get_linux_ifname FAILED` on DPDK (expected), **no SEGV**
 
-## Soft handoff after PPPoE (Option B) — code only
+## Soft handoff after PPPoE (Option B) — deployed (1 restart)
 - Source + build notes: `pppoeclient-handoff/` (Hi-Jiajun `492cdef` + session soft-handoff)
 - Spreads post-PPPoE IP4/IP6 work across VPP workers (WAN RSS stays q0-only)
-- **Not deployed on Digi yet** — wait for explicit approval before install/VPP restart
+- Digi deploy 2026-08-05: **one** VPP restart; plugin `PPPoEClient + soft-handoff (PD Option B)`; `show pppoeclient soft-handoff` → on
+- Backup: `/root/pppoeclient_plugin.so.bak-pre-handoff-*`
 - Rebuild against Digi `vpp-dev` is ABI248-native (binary stride patch not needed for that `.so`)

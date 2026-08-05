@@ -52,19 +52,22 @@ cmake -S . -B /tmp/pd-pppoeclient-handoff-build -DCMAKE_BUILD_TYPE=Release
 cmake --build /tmp/pd-pppoeclient-handoff-build -j"$(nproc)"
 ```
 
-## Deploy — wait for approval
+## Deploy — one VPP restart only
 
-**Do not** install or restart VPP until explicitly approved (flaps Digi PPPoE).
+Approved Digi procedure (exactly **one** `systemctl restart vpp`):
 
-When approved (step 2.4):
+1. Backup live `.so` → install built `.so`
+2. `systemctl stop vpp-pppoe-native.service vpp-bootstrap.service` (no VPP restart)
+3. `PD_ALLOW_VPP_RESTART=1 systemctl restart vpp` ← **the only restart**
+4. `systemctl start vpp-bootstrap.service`
+5. `PD_ALLOW_PPPOE_RESTART=1 /usr/local/sbin/pd-pppoe-enable-once.sh`
+6. Wait for Digi IPv6, then `/usr/local/sbin/pd-vpp-digi-vxlan-cutover.sh`
+7. Update VPS: `DIGI_VTEP=<new> /usr/local/sbin/pd-vpp-digi-vxlan-vps.sh`
+8. `/usr/local/sbin/pd-rss-tune.sh`
 
-1. Backup live `.so`
-2. Install built `.so` to `/usr/lib/x86_64-linux-gnu/vpp_plugins/pppoeclient_plugin.so`
-3. `PD_ALLOW_VPP_RESTART=1 systemctl restart vpp`
-4. Re-arm Digi PPPoE / VXLAN path (`pd-vpp-prox-vxlan-activate.sh` / cutover scripts)
-5. Confirm: `show plugins` description contains `soft-handoff`, `show pppoeclient soft-handoff`
+Confirm: `show plugins` shows `soft-handoff`, `show pppoeclient soft-handoff` → on.
 
-Rollback: restore backup `.so` + one VPP restart, or `set pppoeclient soft-handoff off` (no restart) if only disabling the feature.
+Rollback: restore backup `.so` + one VPP restart, or `set pppoeclient soft-handoff off` (no restart) to disable the feature only.
 
 ## Provenance
 
