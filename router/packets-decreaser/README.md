@@ -35,8 +35,18 @@ When Digi VTEP is known:
 (ip6gre, `GRE_FOU=0`)
 
 ## Latency / Digi bufferbloat
-Under Digi load, ISP buffers cause spikes. **Default = no shape (max Digi throughput).**  
-Optional tradeoff (opt-in): CAKE at ~95% Digi rate (`PD_SHAPE=1` + `DIGI_DOWN_MBIT`/`DIGI_UP_MBIT`).
+Under full speedtest, Digi buffers → high latency (idle stays ~12 ms).  
+**Fix (near-max rate):** CAKE on VPS `gre-pd` at ~95% of measured PVE speedtest:
+
+```bash
+# /etc/pd-gre.env  (example from ~2738/3168 Mbps test)
+DIGI_DOWN_MBIT=2600
+DIGI_UP_MBIT=3000
+PD_SHAPE=1
+/usr/local/sbin/pd-gre-shape-cake.sh
+```
+
+`PD_SHAPE=0` = uncapped (max peak, bufferbloat under saturation).
 
 ## Roles
 | Path | Role |

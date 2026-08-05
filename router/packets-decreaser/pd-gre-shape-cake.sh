@@ -3,21 +3,23 @@
 # VPS TX (gre-pd root)  = download toward Digi/PVE
 # VPS RX via ifb-pd     = upload from Digi/PVE
 #
-# Set in /etc/pd-gre.env (Mbit/s, ~85–95% of Digi speedtest without tunnel):
-#   DIGI_DOWN_MBIT=850
-#   DIGI_UP_MBIT=80
+# Set in /etc/pd-gre.env (~95% of PVE speedtest via PD, keeps near-max rate):
+#   DIGI_DOWN_MBIT=2600
+#   DIGI_UP_MBIT=3000
+#   PD_SHAPE=1
 # Disable: PD_SHAPE=0
 set -euo pipefail
 ENV=/etc/pd-gre.env
 [ -f "$ENV" ] && . "$ENV"
 
 PD_SHAPE="${PD_SHAPE:-0}"
-DIGI_DOWN_MBIT="${DIGI_DOWN_MBIT:-850}"
-DIGI_UP_MBIT="${DIGI_UP_MBIT:-80}"
+DIGI_DOWN_MBIT="${DIGI_DOWN_MBIT:-2600}"
+DIGI_UP_MBIT="${DIGI_UP_MBIT:-3000}"
 IFACE="${PD_SHAPE_IFACE:-gre-pd}"
 IFB="${PD_SHAPE_IFB:-ifb-pd}"
 
-# Default OFF — max Digi throughput. Opt-in only when trading ~5% rate for latency.
+# Opt-in (PD_SHAPE=1). Rates must sit just under Digi/GRE peak to kill bufferbloat
+# without a big throughput cut (unlike a low artificial cap).
 
 if [ "$PD_SHAPE" = 0 ]; then
   tc qdisc del dev "$IFACE" root 2>/dev/null || true
