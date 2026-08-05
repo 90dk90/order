@@ -100,15 +100,15 @@ Path: `host ↔ VPP table 81 ↔ loop208/VXLAN209 ↔ Digi IPv6 (x520wan/pppoe) 
 ### 2.5 A/B measure (2026-08-05) — VPS→1vps via Digi WAN RX
 Path: `iperf3 -c 79.172.242.2` from PD VPS (VXLAN outer hits Digi PPPoE RX → soft-handoff).
 
-| Test | soft-handoff | Receiver | Digi `rx_missed` | HANDOFF_IP6 | Congestion drops |
-|---|---|---:|---:|---:|---:|
-| P8 20s | **on** | **1.94 Gbps** | **31 583** | 1 263 903 | 15 953 |
-| P8 20s | off | 1.67 Gbps | 63 448 | 0 | 0 |
-| P1 15s | on | ~511 Mbps | (noisy) | yes | some |
-| P1 15s | off | ~484 Mbps | (noisy) | 0 | 0 |
+| Test | soft-handoff | Receiver | Digi `rx_missed` | Notes |
+|---|---|---:|---:|---|
+| P8 20s | **on** (FQ default, drop) | **1.94 Gbps** | **31 583** | first A/B; ~1.26M IP6 handoffs, 16k FQ drops |
+| P8 20s | off | 1.67 Gbps | 63 448 | same path |
+| P8 20s | on, **no-drop** FQ1024 | ~1.53 Gbps | ~54–101k | **worse** — stalls WAN RX worker |
+| P8 20s | on, **drop** FQ1024 | ~1.3–1.7 Gbps | ~32–76k | Digi variance; FQ drops ~13k remain |
 
-Notes:
-- Soft-handoff **on** wins on 8-stream (~+16% Gbps, ~−50% `rx_missed`); still far from line rate.
-- WAN RX remains **100% `rx_q0`** (expected with PPPoE).
-- Frame-queue **congestion drops** under load — next knob (needs rebuild + 1 restart): `drop_on_congestion=0` and/or larger FQ nelts.
-- Left enabled: `set pppoeclient soft-handoff on`.
+Honest takeaway:
+- Soft-handoff **did** help vs off (~+16% / −50% miss) — real but limited.
+- `drop_on_congestion=0` **hurt** Digi (mono-queue producer must not block).
+- Left: **on**, FQ nelts **1024**, drop-on-congestion **yes** + runtime CLI to toggle drop without restart.
+- Still far from 10G; WAN `rx_q0` 100%.

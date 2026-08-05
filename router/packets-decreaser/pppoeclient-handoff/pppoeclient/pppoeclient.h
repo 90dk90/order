@@ -515,9 +515,12 @@ typedef struct
    * (VXLAN, fib, NAT, output) spreads across workers. PPP control stays
    * local on the RX worker. Default: on when workers > 1. */
   u8 soft_handoff_enabled;
+  /* 0 = never drop on FQ full (preferred under Digi load); 1 = drop. */
+  u8 soft_handoff_drop_on_congestion;
   u32 fq_ip4_index;
   u32 fq_ip6_index;
   u32 soft_handoff_n_workers;
+  u32 soft_handoff_fq_nelts;
 
   /* convenience */
   vlib_main_t *vlib_main;

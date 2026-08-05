@@ -621,11 +621,11 @@ pppoeclient_session_handoff_flush (vlib_main_t *vm, vlib_node_runtime_t *node,
 				   u16 *ti6, u32 n6)
 {
   u32 n_enq;
+  const int drop = pem->soft_handoff_drop_on_congestion ? 1 : 0;
 
   if (n4)
     {
-      n_enq = vlib_buffer_enqueue_to_thread (vm, node, pem->fq_ip4_index, bi4, ti4, n4,
-					     1 /* drop on congestion */);
+      n_enq = vlib_buffer_enqueue_to_thread (vm, node, pem->fq_ip4_index, bi4, ti4, n4, drop);
       vlib_node_increment_counter (vm, node->node_index, PPPOECLIENT_ERROR_HANDOFF_IP4, n_enq);
       if (PREDICT_FALSE (n_enq < n4))
 	vlib_node_increment_counter (vm, node->node_index,
@@ -633,8 +633,7 @@ pppoeclient_session_handoff_flush (vlib_main_t *vm, vlib_node_runtime_t *node,
     }
   if (n6)
     {
-      n_enq = vlib_buffer_enqueue_to_thread (vm, node, pem->fq_ip6_index, bi6, ti6, n6,
-					     1 /* drop on congestion */);
+      n_enq = vlib_buffer_enqueue_to_thread (vm, node, pem->fq_ip6_index, bi6, ti6, n6, drop);
       vlib_node_increment_counter (vm, node->node_index, PPPOECLIENT_ERROR_HANDOFF_IP6, n_enq);
       if (PREDICT_FALSE (n_enq < n6))
 	vlib_node_increment_counter (vm, node->node_index,

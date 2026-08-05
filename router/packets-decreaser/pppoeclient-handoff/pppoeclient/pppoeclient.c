@@ -4308,6 +4308,7 @@ set_pppoeclient_soft_handoff_command_fn (vlib_main_t *vm, unformat_input_t *inpu
 {
   pppoeclient_main_t *pem = &pppoeclient_main;
   u32 enable = ~0;
+  u32 drop = ~0;
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
@@ -4315,20 +4316,36 @@ set_pppoeclient_soft_handoff_command_fn (vlib_main_t *vm, unformat_input_t *inpu
 	enable = 1;
       else if (unformat (input, "off") || unformat (input, "disable"))
 	enable = 0;
+      else if (unformat (input, "drop-on-congestion on") ||
+	       unformat (input, "drop-on-congestion enable") ||
+	       unformat (input, "drop-on-congestion yes"))
+	drop = 1;
+      else if (unformat (input, "drop-on-congestion off") ||
+	       unformat (input, "drop-on-congestion disable") ||
+	       unformat (input, "drop-on-congestion no"))
+	drop = 0;
       else
-	return clib_error_return (0, "expect on|off");
+	return clib_error_return (0, "expect on|off | drop-on-congestion on|off");
     }
 
-  if (enable == ~0)
-    return clib_error_return (0, "expect on|off");
+  if (enable == ~0 && drop == ~0)
+    return clib_error_return (0, "expect on|off | drop-on-congestion on|off");
 
-  if (enable && (pem->soft_handoff_n_workers <= 1 || pem->fq_ip4_index == ~0 ||
-		 pem->fq_ip6_index == ~0))
-    return clib_error_return (0, "soft-handoff unavailable (need >1 workers + fq init)");
-
-  pem->soft_handoff_enabled = enable ? 1 : 0;
-  vlib_cli_output (vm, "pppoeclient soft-handoff %s",
-		   pem->soft_handoff_enabled ? "on" : "off");
+  if (enable != ~0)
+    {
+      if (enable && (pem->soft_handoff_n_workers <= 1 || pem->fq_ip4_index == ~0 ||
+		     pem->fq_ip6_index == ~0))
+	return clib_error_return (0, "soft-handoff unavailable (need >1 workers + fq init)");
+      pem->soft_handoff_enabled = enable ? 1 : 0;
+      vlib_cli_output (vm, "pppoeclient soft-handoff %s",
+		       pem->soft_handoff_enabled ? "on" : "off");
+    }
+  if (drop != ~0)
+    {
+      pem->soft_handoff_drop_on_congestion = drop ? 1 : 0;
+      vlib_cli_output (vm, "pppoeclient soft-handoff drop-on-congestion %s",
+		       pem->soft_handoff_drop_on_congestion ? "on" : "off");
+    }
   return 0;
 }
 
@@ -4336,13 +4353,16 @@ set_pppoeclient_soft_handoff_command_fn (vlib_main_t *vm, unformat_input_t *inpu
  * Enable/disable soft worker handoff after PPPoE session unwrap (Digi Option B).
  * When on, IP4/IP6 payloads are hashed (5-tuple) and frame-queued onto
  * ip4-input / ip6-input of other workers. PPP control stays local.
+ * drop-on-congestion: on keeps the WAN RX worker free (preferred on Digi);
+ * off may stall RX and raise NIC rx_missed.
  *
  * @cliexpar
  * @cliexcmd{set pppoeclient soft-handoff on}
+ * @cliexcmd{set pppoeclient soft-handoff drop-on-congestion on}
  ?*/
 VLIB_CLI_COMMAND (set_pppoeclient_soft_handoff_command, static) = {
   .path = "set pppoeclient soft-handoff",
-  .short_help = "set pppoeclient soft-handoff <on|off>",
+  .short_help = "set pppoeclient soft-handoff <on|off> | drop-on-congestion <on|off>",
   .function = set_pppoeclient_soft_handoff_command_fn,
 };
 
@@ -4356,6 +4376,9 @@ show_pppoeclient_soft_handoff_command_fn (vlib_main_t *vm, unformat_input_t *inp
   vlib_cli_output (vm, "  workers: %u", pem->soft_handoff_n_workers);
   vlib_cli_output (vm, "  fq-ip4-index: %u", pem->fq_ip4_index);
   vlib_cli_output (vm, "  fq-ip6-index: %u", pem->fq_ip6_index);
+  vlib_cli_output (vm, "  fq-nelts: %u", pem->soft_handoff_fq_nelts);
+  vlib_cli_output (vm, "  drop-on-congestion: %s",
+		   pem->soft_handoff_drop_on_congestion ? "yes" : "no");
   vlib_cli_output (vm, "  counters: show error | grep HANDOFF");
   return 0;
 }
@@ -4987,10 +5010,18 @@ pppoeclient_init (vlib_main_t *vm)
   /* Soft handoff frame queues → ip4-input / ip6-input on target workers.
    * Built against Digi 26.06-release headers (ABI248 native — no binary
    * stride patch needed for a rebuild). Disabled automatically when there
-   * is only one worker. */
+   * is only one worker.
+   *
+   * Digi: large FQs (1024) + drop-on-congestion by default so the mono-queue
+   * WAN RX worker never blocks (no-drop raised NIC rx_missed in A/B). */
   pem->fq_ip4_index = ~0;
   pem->fq_ip6_index = ~0;
   pem->soft_handoff_n_workers = vlib_num_workers ();
+  /* Digi WAN is mono-queue on one worker: never block that producer.
+   * Prefer drop-on-congestion=1 (keep RX spinning) + large FQ to absorb bursts.
+   * Runtime toggle: set pppoeclient soft-handoff drop-on-congestion on|off */
+  pem->soft_handoff_drop_on_congestion = 1;
+  pem->soft_handoff_fq_nelts = 1024;
   pem->soft_handoff_enabled = pem->soft_handoff_n_workers > 1;
   if (pem->soft_handoff_enabled)
     {
@@ -4998,8 +5029,10 @@ pppoeclient_init (vlib_main_t *vm)
       vlib_node_t *ip6_in = vlib_get_node_by_name (vm, (u8 *) "ip6-input");
       if (ip4_in && ip6_in)
 	{
-	  pem->fq_ip4_index = vlib_frame_queue_main_init (ip4_in->index, 0);
-	  pem->fq_ip6_index = vlib_frame_queue_main_init (ip6_in->index, 0);
+	  pem->fq_ip4_index =
+	    vlib_frame_queue_main_init (ip4_in->index, pem->soft_handoff_fq_nelts);
+	  pem->fq_ip6_index =
+	    vlib_frame_queue_main_init (ip6_in->index, pem->soft_handoff_fq_nelts);
 	}
       else
 	{
@@ -5417,7 +5450,7 @@ pppoeclient_exit (vlib_main_t *vm)
 VLIB_MAIN_LOOP_EXIT_FUNCTION (pppoeclient_exit);
 VLIB_PLUGIN_REGISTER () = {
   .version = VPP_BUILD_VER,
-  .description = "PPPoEClient + soft-handoff (PD Option B)",
+  .description = "PPPoEClient + soft-handoff (PD Option B, FQ1024)",
 };
 /*
  *
