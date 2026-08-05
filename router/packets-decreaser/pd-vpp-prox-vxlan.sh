@@ -109,6 +109,8 @@ $VPP set ip neighbor "$LAB_LOOP" "$LAB_VPS" "$LAB_VPS_MAC" static 2>/dev/null ||
 $VPP ip route del table "$PBR_TABLE" 0.0.0.0/0 2>/dev/null || true
 $VPP ip route add table "$PBR_TABLE" 0.0.0.0/0 via "$LAB_VPS" "$LAB_LOOP"
 
+/usr/local/sbin/pd-vpp-vxlan-mss.sh 2>/dev/null || true
+
 # UPnP → Proximus local used for SNAT
 if command -v upnpc >/dev/null 2>&1; then
   upnpc -d "$VXLAN_PORT" UDP >/dev/null 2>&1 || true

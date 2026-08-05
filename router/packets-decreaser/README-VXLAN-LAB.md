@@ -65,6 +65,15 @@ Path (interim): `host ↔ VPP table 81 ↔ loop208/VXLAN ↔ tap36 → Linux SNA
 | `x520wan` 4 RX queues + workers placed | OK |
 | `x520wan` RSS **activates on admin-up** (`ipv4-udp` included) | OK |
 | af_packet on `enp36s0` | FAIL (SEGV in `ethernet_input`) — do not use |
-| Digi PPPoE session / WAN IPv6 | **needs PPPoE** |
+| Digi PPPoE session / WAN IPv6 | **needs** `PD_ALLOW_PPPOE_RESTART=1 pd-pppoe-enable-once.sh` |
 | RSS multi-queue counters under Digi load | **needs PPPoE** (traffic on `x520wan`) |
-| GRE6 vs VXLAN throughput on Digi | **needs PPPoE** |
+| GRE6 vs VXLAN throughput on Digi | N/A — GRE retired |
+
+## Done now (no PPPoE session)
+- MSS clamp 1360 on `loop208` / `vxlan_tunnel208` / `loop10` (live clamped >0)
+- PPPoE **plugins preloaded** in VPP; **session still masked**
+- No-flap guards: `PD_ALLOW_VPP_RESTART` / `PD_ALLOW_PPPOE_RESTART`
+- `pd-pppoe-enable-once.sh` — one planned PPPoE bring-up, **no VPP restart**
+- `pd-vxlan-vtep-watchdog` — Digi IPv6 drift without PPPoE flap
+- Proximus iperf baseline ~400 Mbps (shared by PD via tap36) in `/etc/pd/pd-proximus-baseline.txt`
+- Cutover dry-run: exits cleanly without Digi IPv6

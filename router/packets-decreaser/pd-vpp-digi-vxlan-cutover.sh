@@ -73,6 +73,8 @@ $VPP set interface mtu packet "$VXLAN_MTU" "$LAB_LOOP" 2>/dev/null || true
 $VPP set ip neighbor "$LAB_LOOP" "$LAB_VPS" "$LAB_VPS_MAC" static 2>/dev/null || true
 $VPP ip route add table "$PBR_TABLE" 0.0.0.0/0 via "$LAB_VPS" "$LAB_LOOP"
 
+/usr/local/sbin/pd-vpp-vxlan-mss.sh 2>/dev/null || true
+
 # Mode flags — VXLAN only forever
 cat >/etc/default/pd-underlay <<EOF
 # Digi VXLAN-only PD (GRE retired).
