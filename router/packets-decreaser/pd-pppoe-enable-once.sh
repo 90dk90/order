@@ -38,6 +38,14 @@ systemctl mask pd-gre-watchdog.timer pd-gre-watchdog.service 2>/dev/null || true
 
 systemctl start vpp-pppoe-native.service
 
-echo "pd-pppoe-enable-once: started vpp-pppoe-native (VPP not restarted)."
-echo "Wait for global Digi IPv6, then: /usr/local/sbin/pd-vpp-digi-vxlan-cutover.sh"
+# Refuse if someone left the crashing af_packet binding around
+if vppctl show interface 2>/dev/null | grep -qE '^host-enp36s0[[:space:]]'; then
+  echo "pd-pppoe-enable-once: WARNING host-enp36s0 present — delete it (af_packet SEGV risk): vppctl delete host-interface name host-enp36s0" >&2
+fi
+
+echo "pd-pppoe-enable-once: started vpp-pppoe-native (VPP not restarted, no af_packet)."
+echo "Wait for global Digi IPv6, then soft cutover:"
+echo "  /usr/local/sbin/pd-vpp-digi-vxlan-cutover.sh"
+echo "  DIGI_VTEP=<ipv6> /usr/local/sbin/pd-vpp-digi-vxlan-vps.sh"
+echo "  PD_CUTOVER_TEAR_OLD=1 /usr/local/sbin/pd-vpp-digi-vxlan-cutover.sh"
 vppctl show pppoe client detail 2>/dev/null | head -40 || true
