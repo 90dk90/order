@@ -27,6 +27,8 @@ if [ -x /usr/local/sbin/vpp-lan-bridge-prune.sh ]; then
 fi
 
 $VPP ip table add "$PBR_TABLE" 2>/dev/null || true
+$VPP ip table add 82 2>/dev/null || true
+$VPP ip table add 83 2>/dev/null || true
 
 # Prefer not to "del all" if already correct (/32 in PBR) — avoids VPP churn.
 need_addr=1

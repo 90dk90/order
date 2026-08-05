@@ -1,46 +1,36 @@
-# Packets Decreaser — hands-off Digi GRE + BGP
+# Packets Decreaser — Proximus primary + Digi Linux backup
 
-## Mode (2026-08)
-**PD-only egress**: all LAN traffic via `gre0` → PD dedicated IP.
-Digi sticky outbound (classify/tap/NAT) is **abandoned** (VPP SIGSEGV + ARP storms).
-Opt-in only: `PD_ENABLE_STICKY=1`.
+## Mode (2026-08-05)
+**Proximus = primary underlay** (IPv4 GRE, no WireGuard required).
+**Digi PPPoE = Linux pppd** (TAP `vpp-pppoe`), not VPP native pppoeclient (avoids VPP SIGSEGV).
+**GRE = Linux `gre-pd`**, not VPP `gre0`.
+**VPP = LAN only** (BD10 / loop10 `/32` anti-ARP) + exit tap `vpp-pd-exit` → Linux GRE.
 
-## LAN anti-ARP (latency)
-Never install connected `79.172.242.0/24` or `via loop10` glean on the BVI.
-Use `pd-lan-prepare.sh`: GW `.1/32`, known hosts `/32` + static neigh, cover `/24 via drop`.
-Works **without** Digi global IPv6 (safe while Digi withholds RA).
+## Underlay selection (`pd-linux-gre-activate.sh`)
+1. `PD_UNDERLAY=auto` (default): Proximus IPv4 if VPS reachable, else Digi `807f`/`817f` on `ppp0`
+2. Reject Digi synthetic `80ff` for Digi underlay
+3. If Proximus local is RFC1918, VPS remote = public NAT IP (`ifconfig.me`) — enable **hôte LAN ponté** on the Proximus box so inbound GRE works
 
-## Auto VTEP sync
-When Digi PPPoE renumbers IPv6:
-1. `vpp-pppoe-native.service` → `ExecStartPost=pd-gre-activate.sh`
-2. Router rebuilds VPP `gre0` to `2a0e:97c0:4c1::60`
-3. SSH to BGP VPS → `pd-gre-set-vtep.sh <new-vtep>` rebuilds `gre-pd`
-4. `pd-gre-watchdog.timer` (every 60s) catches drift / GRE down
-5. While Digi `wan-ipv6` is `<none>`/`80ff`, watchdog **does not** recreate PPPoE
+## Digi PPPoE placement
+- **Current live default:** Digi stays on **VPP native** `pppoeclient` (stable IPv4).
+- **Optional:** `/usr/local/sbin/pd-digi-linux-pppoe.sh` moves Digi to Linux `pppd` via TAP (BD20). Use only when VPP softpath is healthy — it has crashed this box under churn.
+- GRE for PD is **Linux `gre-pd`**, not VPP `gre0`, to avoid GRE SIGSEGV.
 
-### Digi VTEP selection (critical)
-Use **pppoeclient `wan-ipv6 observed`** (`807f` / `817f`).
+## Proximus hôte ponté (required for GRE inbound)
+Without ponté, Digi box is `192.168.129.x` behind NAT; VPS sees `91.179.x.x` but **GRE return path fails**.
+Bridge/hôte ponté Digi `enp36s0` MAC on the Proximus box so the public IPv4 sits on Digi → inner GRE comes up.
+## Activate / watchdog
+```bash
+/usr/local/sbin/pd-linux-gre-activate.sh
+# timer → pd-gre-watchdog-linux.sh (ppp0 + linux GRE health; no PPPoE flap on missing Digi IPv6)
+```
 
-Do **not** use synthetic `2a01:4700:80ff:ffff::` (outbound-ok, inbound blackhole).
+## VPS
+`pd-gre-set-vtep.sh <v4-or-v6>` rebuilds `gre-pd` as GRE or ip6gre automatically.
 
 ## Roles
 | Host | Role |
 |------|------|
-| Digi/VPP router | PPPoE + GRE client + table 81 LAN (BD10 / loop10 BVI `/32`) |
-| PD VPS `77.90.4.48` | BGP AS219084 + GRE hub + forward `/24` |
-| PVE `79.172.242.2` | BBR+fq, MSS 1408, rings 8192 |
-
-## Underlay
-Keep **GRE over IPv6**. Digi CGNAT IPv4 does not NAT proto 47 cleanly for DIY GRE.
-
-## Harden (ICMPv6 only)
-`pd-gre-harden.sh` drops **ICMPv6 echo-request** to Digi WAN and **time-exceeded / dest-unreach**
-(traceroute leaks). No TCP/UDP/GRE blanket deny (that ACL crashed VPP under recreate).
-On by default; skip with `PD_SKIP_HARDEN=1`. VPS side: `pd-gre-harden-vps.sh` via VTEP sync.
-
-Install Digi:
-```bash
-install -m 755 pd-gre-activate.sh pd-gre-watchdog.sh pd-lan-prepare.sh /usr/local/sbin/
-/usr/local/sbin/pd-lan-prepare.sh          # now, no IPv6 needed
-PD_FORCE_SYNC=1 /usr/local/sbin/pd-gre-activate.sh   # when Digi global is up
-```
+| Router | Proximus underlay + Digi Linux PPPoE backup + Linux GRE + VPP LAN |
+| PD VPS `77.90.4.48` | BGP AS219084 + GRE hub |
+| PVE `79.172.242.2` | dedicated LAN host |

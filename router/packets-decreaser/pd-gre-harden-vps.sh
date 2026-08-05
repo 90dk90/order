@@ -30,6 +30,14 @@ iptables -C OUTPUT -o gre-pd -p icmp --icmp-type time-exceeded -j DROP 2>/dev/nu
 iptables -C OUTPUT -o gre-pd -p icmp --icmp-type destination-unreachable -j DROP 2>/dev/null || \
   iptables -I OUTPUT -o gre-pd -p icmp --icmp-type destination-unreachable -j DROP 2>/dev/null || true
 
+# IPv4 Proximus remotes: skip ip6tables Digi hide
+if [[ "$DIGI_VTEP" != *:* ]]; then
+  mkdir -p "$(dirname "$STATE")"
+  printf "LAST_DIGI_VTEP=%s\n" "$DIGI_VTEP" > "$STATE"
+  echo "pd-gre-harden-vps ok digi=$DIGI_VTEP inner=$INNER_IP (ipv4 underlay, skip ip6 hide)"
+  exit 0
+fi
+
 if command -v ip6tables >/dev/null 2>&1; then
   # Drop jumps aimed at any previous Digi VTEP we tracked
   if [ -r "$STATE" ]; then
