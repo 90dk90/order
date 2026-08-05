@@ -35,22 +35,8 @@ When Digi VTEP is known:
 (ip6gre, `GRE_FOU=0`)
 
 ## Latency / Digi bufferbloat
-Full speedtest fills Digi buffers → high latency (idle ~12 ms OK).
-
-| Direction | Where to shape | Why |
-|-----------|----------------|-----|
-| **Download** | VPS `gre-pd` CAKE | Before Digi downlink fills |
-| **Upload** | **PVE** NIC toward Digi | VPS IFB is too late — Digi uplink already queued |
-
-```bash
-# VPS /etc/pd-gre.env
-DIGI_DOWN_MBIT=2600
-PD_SHAPE=1
-/usr/local/sbin/pd-gre-shape-cake.sh
-
-# PVE (run on the dedicated host)
-DIGI_UP_MBIT=2800 IFACE=enp16s0 /usr/local/sbin/pd-pve-upload-cake.sh
-```
+CAKE shaping is **off** (`PD_SHAPE=0`) — max Digi/GRE throughput, no artificial cap.
+Scripts `pd-gre-shape-cake.sh` / `pd-pve-upload-cake.sh` remain available but unused.
 
 ## Roles
 | Path | Role |
