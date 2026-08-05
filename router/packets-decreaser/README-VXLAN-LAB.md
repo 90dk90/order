@@ -33,3 +33,25 @@ Linux GPE requires `external` (not simple P2P). Classic VXLAN interops both side
 ## Success criteria
 - `rx_q1/q2/q3` non-zero under multi-flow lab traffic
 - GRE path still healthy on 172.16.207.0/30
+
+## Temporary /24 hairpin (Proximus, GRE6 down)
+While Digi has no global WAN IPv6, PD `/24` can hairpin over the Proximus Linux VXLAN
+(no VPP plugin, no PPPoE restart):
+
+```bash
+# Digi
+/usr/local/sbin/pd-vxlan-prox-digi.sh
+/usr/local/sbin/pd-vxlan-prox-hairpin-digi.sh
+# VPS
+/usr/local/sbin/pd-vxlan-prox-hairpin-vps.sh
+```
+
+Path: `host ↔ VPP table 81 ↔ tap208 ↔ vxlan-prox ↔ VPS vxlan-lab ↔ BGP`.
+
+Revert when GRE6 is back:
+```bash
+# Digi then VPS
+/usr/local/sbin/pd-vxlan-prox-hairpin-digi-off.sh
+/usr/local/sbin/pd-vxlan-prox-hairpin-vps-off.sh
+# then let pd-gre-watchdog reclaim gre0
+```
