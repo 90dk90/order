@@ -52,8 +52,12 @@ ip link set "$TAP_HOST_IF" mtu 1500 2>/dev/null || true
 HOST_MAC=$(ip -o link show "$TAP_HOST_IF" | awk '{for(i=1;i<=NF;i++) if($i=="link/ether"){print $(i+1); exit}}')
 [ -n "$HOST_MAC" ] && $VPP set ip neighbor "tap${TAP_ID}" "$TAP_HOST_PEER" "$HOST_MAC" static 2>/dev/null || true
 
-# VPP default via Linux (Proximus behind Linux)
+# VPP default via Linux (Proximus behind Linux).
+# When Digi PPPoE is also up, pppoeclient installs 0/0 via digi (API) which wins
+# over this CLI default — pin the VPS VTEP host route so VXLAN outer stays on Proximus.
 $VPP ip route add 0.0.0.0/0 via "$TAP_HOST_PEER" "tap${TAP_ID}" 2>/dev/null || true
+$VPP ip route del "$VPS_V4"/32 2>/dev/null || true
+$VPP ip route add "$VPS_V4"/32 via "$TAP_HOST_PEER" "tap${TAP_ID}" 2>/dev/null || true
 
 # Linux: forward underlay toward Proximus; SNAT VXLAN outer to LAN IP
 sysctl -q -w net.ipv4.ip_forward=1

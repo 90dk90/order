@@ -35,9 +35,14 @@ sudo /usr/local/sbin/vpp-pppoe-rollback-linux.sh
 
 ## Packages / plugin note
 
-- Official VPP `26.06-release` + `vpp-pppoeclient-plugins` (Hi-Jiajun)
-- Binary patch on router: IPv6CP link-local install uses `/128` (stock plugin used `/64`, rejected by VPP 26.06)
-- Backup: `/usr/lib/.../pppoeclient_plugin.so.bak-ll128`
+- Official VPP `26.06-release` + `vpp-pppoeclient-plugins` (Hi-Jiajun **26.06-rc0**)
+- **Required ABI patch** before enabling PPPoE: `/usr/local/sbin/pd-pppoeclient-abi-patch.sh`
+  - Stock plugin indexes `vnet_device_class_t` with stride **240**; FDio 26.06-release is **248**
+  - Without the patch, discovery hits `save_session` → `get_linux_ifname` → `format(format_device=0x1)` → **SIGSEGV**
+  - Patch rewrites both `imul $0xf0` → `$0xf8` and keeps IPv6CP link-local **/128** (ll128)
+  - Reload needs **one** planned `systemctl restart vpp`, then re-arm underlay
+- No matching `26.06-release` prebuilt exists upstream (releases jump rc0 → 26.10-rc0); do not install 26.10-rc0 against 26.06-release
+- Backups: `pppoeclient_plugin.so.bak-ll128`, `*.bak-pre-abi248-*`
 
 ## Digi WAN IPv6
 

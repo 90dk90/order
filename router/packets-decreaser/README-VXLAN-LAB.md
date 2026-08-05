@@ -65,7 +65,7 @@ Path (interim): `host ↔ VPP table 81 ↔ loop208/VXLAN ↔ tap36 → Linux SNA
 | `x520wan` 4 RX queues + workers placed | OK |
 | `x520wan` RSS **activates on admin-up** (`ipv4-udp` included) | OK |
 | af_packet on `enp36s0` | FAIL (SEGV in `ethernet_input`) — do not use |
-| Digi PPPoE session / WAN IPv6 | **needs** `PD_ALLOW_PPPOE_RESTART=1 pd-pppoe-enable-once.sh` |
+| Digi PPPoE session / WAN IPv6 | **OK** after ABI248 patch + `PD_ALLOW_PPPOE_RESTART=1 pd-pppoe-enable-once.sh` |
 | RSS multi-queue counters under Digi load | **needs PPPoE** (traffic on `x520wan`) |
 | GRE6 vs VXLAN throughput on Digi | N/A — GRE retired |
 
@@ -80,6 +80,13 @@ Path (interim): `host ↔ VPP table 81 ↔ loop208/VXLAN ↔ tap36 → Linux SNA
 
 ## Soft Digi cutover (crash-aware)
 - **Never** `host-interface` / af_packet on `enp36s0` (SEGV)
-- PPPoE enable: **no VPP restart** (plugins preloaded)
+- **Before first PPPoE enable:** run `pd-pppoeclient-abi-patch.sh` + one VPP restart (ABI248). Stock Hi-Jiajun `26.06-rc0` plugin SIGSEGVs on FDio `26.06-release` during discovery (`format_device` stride 240 vs 248).
+- PPPoE enable: **no VPP restart** once plugins preloaded + ABI patch loaded
+- With Digi PPPoE up, `pd-vpp-prox-vxlan.sh` pins `77.90.4.48/32` via `tap36` so Digi’s `0/0 via digi` cannot steal VXLAN outer
 - Cutover: create **new** `vxlan_tunnel209` first → update VPS → only then `PD_CUTOVER_TEAR_OLD=1` to drop Proximus tunnel/tap
 - PPPoE native script is idempotent (won’t rediscover a live session)
+
+## PPPoE crash fix verified (2026-08-05)
+- Cause: plugin `sizeof(vnet_device_class_t)=240` vs Digi headers `248`
+- Fix: ABI248 binary patch (not a newer unmatched deb — no 26.06-release package exists)
+- After patch + VPP reload: `PPPOE_CLIENT_SESSION`, Digi IPv6 observed, soft `get_linux_ifname FAILED` on DPDK (expected), **no SEGV**
