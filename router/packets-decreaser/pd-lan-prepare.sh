@@ -1,6 +1,7 @@
 #!/bin/sh
-# LAN BVI + anti-ARP FIB only (no GRE / Digi IPv6 required).
-# Safe to run while waiting for Digi global IPv6.
+# LAN BVI + anti-ARP FIB only.
+# Soft/idempotent: if loop10 already has GW /32 in table 81, do nothing.
+# Avoids VPP SIGSEGV from repeated ip route del/add churn (Infrawire-stable mode).
 set -eu
 VPP="/usr/bin/vppctl -s /run/vpp/cli.sock"
 . /etc/pd/pd-gre.conf 2>/dev/null || true
@@ -12,7 +13,23 @@ LAN_HOSTS="${LAN_HOSTS:-79.172.242.2:c4:62:37:0d:2f:96 79.172.242.3:c4:62:37:0d:
 
 $VPP show version >/dev/null
 
-# Idempotent: ignore "already exists" style errors; never hard-fail the box.
+# Already correct → exit quietly (no FIB churn)
+if $VPP show interface addr loop10 2>/dev/null | tr -d '\r' | grep -q "${LAN_GW}/32" \
+  && $VPP show interface addr loop10 2>/dev/null | tr -d '\r' | grep -q "table-id ${PBR_TABLE}" \
+  && ! $VPP show ip fib table 0 "$LAN_PREFIX" 2>/dev/null | tr -d '\r' | grep -q 'ipv4-glean'; then
+  # Ensure known host /32s exist; if any missing, fall through to repair
+  missing=0
+  for entry in $LAN_HOSTS; do
+    ip="${entry%%:*}"
+    $VPP show ip fib table "$PBR_TABLE" "${ip}/32" 2>/dev/null | tr -d '\r' | grep -q 'via' || missing=1
+  done
+  if [ "$missing" = 0 ]; then
+    echo "pd-lan-prepare: already OK — skip"
+    exit 0
+  fi
+fi
+
+# Idempotent create (ignore already-exists)
 $VPP create bridge-domain "$LAN_BD" 2>/dev/null || true
 if ! $VPP show interface 2>/dev/null | tr -d '\r' | awk '$1=="loop10"{found=1} END{exit !found}'; then
   $VPP create loopback interface instance 10 2>/dev/null || true
@@ -31,25 +48,19 @@ $VPP ip table add "$PBR_TABLE" 2>/dev/null || true
 $VPP ip table add 82 2>/dev/null || true
 $VPP ip table add 83 2>/dev/null || true
 
-# Prefer not to "del all" if already correct (/32 in PBR) — avoids VPP churn.
 need_addr=1
 if $VPP show interface addr loop10 2>/dev/null | tr -d '\r' | grep -q "${LAN_GW}/32" \
   && $VPP show interface addr loop10 2>/dev/null | tr -d '\r' | grep -q "table-id ${PBR_TABLE}"; then
   need_addr=0
 fi
 if [ "$need_addr" = 1 ]; then
-  # Remove legacy /24 only, then bind VRF, then /32 — avoid "del all" when possible
+  # Prefer not to del-all — only remove legacy /24 then set /32
   $VPP set interface ip address del loop10 "${LAN_GW}/24" 2>/dev/null || true
   $VPP set interface ip table loop10 "$PBR_TABLE" 2>/dev/null || true
   $VPP set interface ip address loop10 "${LAN_GW}/32" 2>/dev/null || true
 fi
 
-for t in 0 "$PBR_TABLE" 82 83; do
-  $VPP ip route del table "$t" "$LAN_PREFIX" via loop10 2>/dev/null || true
-  $VPP ip route del table "$t" "$LAN_PREFIX" 2>/dev/null || true
-done
-$VPP ip route del "$LAN_PREFIX" via loop10 2>/dev/null || true
-
+# Install host routes without blanket del of whole prefix tables when possible
 for entry in $LAN_HOSTS; do
   ip="${entry%%:*}"
   mac=""
@@ -57,9 +68,18 @@ for entry in $LAN_HOSTS; do
     *:*) mac="${entry#*:}" ;;
   esac
   [ -n "$mac" ] && $VPP set ip neighbor loop10 "$ip" "$mac" static 2>/dev/null || true
-  $VPP ip route add table "$PBR_TABLE" "${ip}/32" via "$ip" loop10 2>/dev/null || true
-  $VPP ip route add table 0 "${ip}/32" via ip4-lookup-in-table "$PBR_TABLE" 2>/dev/null || true
+  if ! $VPP show ip fib table "$PBR_TABLE" "${ip}/32" 2>/dev/null | tr -d '\r' | grep -q 'via'; then
+    $VPP ip route add table "$PBR_TABLE" "${ip}/32" via "$ip" loop10 2>/dev/null || true
+  fi
+  if ! $VPP show ip fib table 0 "${ip}/32" 2>/dev/null | tr -d '\r' | grep -q 'ip4-lookup-in-table'; then
+    $VPP ip route add table 0 "${ip}/32" via ip4-lookup-in-table "$PBR_TABLE" 2>/dev/null || true
+  fi
 done
+
+# Drop leftover /24 glean if present
+if $VPP show ip fib table 0 "$LAN_PREFIX" 2>/dev/null | tr -d '\r' | grep -q 'ipv4-glean'; then
+  $VPP ip route del table 0 "$LAN_PREFIX" 2>/dev/null || true
+fi
 $VPP ip route add table "$PBR_TABLE" "$LAN_PREFIX" via drop 2>/dev/null || true
 $VPP ip route add table 0 "$LAN_PREFIX" via ip4-lookup-in-table "$PBR_TABLE" 2>/dev/null || true
 $VPP ip route add table 0 "${LAN_GW}/32" via ip4-lookup-in-table "$PBR_TABLE" 2>/dev/null || true

@@ -144,12 +144,10 @@ strip_sticky_classify
 rm -f /etc/pd/sticky-digi
 
 # GW /32 on loop10 / PBR table (never /24 connected glean)
-# Prefer lan-prepare helper (avoids needless del-all when already correct)
+# Soft LAN prepare (no-op if already OK — avoids FIB SIGSEGV churn)
 if [ -x /usr/local/sbin/pd-lan-prepare.sh ]; then
   /usr/local/sbin/pd-lan-prepare.sh >/dev/null || true
 else
-  $VPP set interface ip address del loop10 "${LAN_GW}/24" 2>/dev/null || true
-  $VPP set interface ip address del loop10 all 2>/dev/null || true
   $VPP set interface ip table loop10 "$PBR_TABLE" 2>/dev/null || true
   $VPP set interface ip address loop10 "${LAN_GW}/32" 2>/dev/null || true
 fi
@@ -159,8 +157,11 @@ $VPP set interface l2-mss-clamp loop10 disable 2>/dev/null || true
 $VPP set interface tcp-mss-clamp x520lan ip4 disable ip6 disable 2>/dev/null || true
 $VPP set interface l2-mss-clamp x520lan disable 2>/dev/null || true
 
-$VPP ip route del table "$PBR_TABLE" 0.0.0.0/0 2>/dev/null || true
-$VPP ip route add table "$PBR_TABLE" 0.0.0.0/0 via "$INNER_PEER" gre0 2>/dev/null || true
+# Default for dedicated VRF via VPP gre0 (add if missing; avoid del/add flap)
+if ! $VPP show ip fib table "$PBR_TABLE" 0.0.0.0/0 2>/dev/null | grep -q gre0; then
+  $VPP ip route add table "$PBR_TABLE" 0.0.0.0/0 via "$INNER_PEER" gre0 2>/dev/null || true
+fi
+# Host /32s — soft install only
 install_lan_fib
 
 if [ "$OLD" != "$SRC" ] || [ "${PD_FORCE_SYNC:-0}" = 1 ]; then
