@@ -18,8 +18,9 @@ done
 
 $VPP set interface state x520wan up
 $VPP set interface state x520lan up
-$VPP set interface state x520extra0 up
-$VPP set interface state x520extra1 up
+# Unused X520 ports: keep down (avoid poll tax on GRE single-RSS worker)
+$VPP set interface state x520extra0 down
+$VPP set interface state x520extra1 down
 
 # tap30 always needed for Infrawire underlay host path until PD is fully in-VPP
 if ! $VPP show interface | /bin/grep -q '^tap30[[:space:]]'; then
