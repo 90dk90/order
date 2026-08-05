@@ -12,8 +12,9 @@ LAN_HOSTS="${LAN_HOSTS:-79.172.242.2:c4:62:37:0d:2f:96 79.172.242.3:c4:62:37:0d:
 
 $VPP show version >/dev/null
 
+# Idempotent: ignore "already exists" style errors; never hard-fail the box.
 $VPP create bridge-domain "$LAN_BD" 2>/dev/null || true
-if ! $VPP show interface 2>/dev/null | grep -q '^loop10'; then
+if ! $VPP show interface 2>/dev/null | tr -d '\r' | awk '$1=="loop10"{found=1} END{exit !found}'; then
   $VPP create loopback interface instance 10 2>/dev/null || true
 fi
 for iface in x520lan x520extra0 x520extra1; do
@@ -32,16 +33,13 @@ $VPP ip table add 83 2>/dev/null || true
 
 # Prefer not to "del all" if already correct (/32 in PBR) — avoids VPP churn.
 need_addr=1
-if $VPP show interface addr loop10 2>/dev/null | grep -q "${LAN_GW}/32" \
-  && $VPP show interface addr loop10 2>/dev/null | grep -q "table-id ${PBR_TABLE}"; then
+if $VPP show interface addr loop10 2>/dev/null | tr -d '\r' | grep -q "${LAN_GW}/32" \
+  && $VPP show interface addr loop10 2>/dev/null | tr -d '\r' | grep -q "table-id ${PBR_TABLE}"; then
   need_addr=0
 fi
 if [ "$need_addr" = 1 ]; then
-  # Remove legacy /24 only, then bind VRF, then /32
+  # Remove legacy /24 only, then bind VRF, then /32 — avoid "del all" when possible
   $VPP set interface ip address del loop10 "${LAN_GW}/24" 2>/dev/null || true
-  if $VPP show interface addr loop10 2>/dev/null | grep -q 'L3 '; then
-    $VPP set interface ip address del loop10 all 2>/dev/null || true
-  fi
   $VPP set interface ip table loop10 "$PBR_TABLE" 2>/dev/null || true
   $VPP set interface ip address loop10 "${LAN_GW}/32" 2>/dev/null || true
 fi

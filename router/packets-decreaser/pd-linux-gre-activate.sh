@@ -3,14 +3,15 @@
 # Behind Proximus NAT, raw GRE (proto 47) outbound is dropped by the box; use
 # GRE-over-UDP (FOU) so the tunnel passes like normal UDP. Digi IPv6 keeps
 # native ip6gre (no FOU).
-# VPP keeps LAN only; table 81 exits via tap vpp-pd-exit → Linux → gre-pd → VPS
-# when PD_ENABLE_EXIT_TAP=1.
+# VPP = LAN only; table 81 exits via existing tap (default tap30/vpp6-host)
+# → Linux → gre-pd → VPS. Do not create new taps on this box (past SIGSEGV).
 set -eu
 . /etc/pd/pd-gre.conf
 
 PROX_IF="${PROX_IF:-enp36s0}"
-EXIT_TAP="${EXIT_TAP:-vpp-pd-exit}"
-EXIT_TAP_ID="${EXIT_TAP_ID:-40}"
+# Reuse pre-existing VPP tap — never create unless PD_EXIT_TAP_CREATE=1
+EXIT_TAP="${EXIT_TAP:-vpp6-host}"
+EXIT_TAP_ID="${EXIT_TAP_ID:-30}"
 EXIT_VPP_IP="${EXIT_VPP_IP:-10.254.207.1/30}"
 EXIT_LINUX_IP="${EXIT_LINUX_IP:-10.254.207.2/30}"
 EXIT_LINUX_PEER="${EXIT_LINUX_PEER:-10.254.207.1}"
@@ -18,6 +19,8 @@ INNER_LOCAL="${INNER_LOCAL:-172.16.207.2/30}"
 INNER_PEER="${INNER_PEER:-172.16.207.1}"
 PBR_TABLE="${PBR_TABLE:-81}"
 VPP="/usr/bin/vppctl -s /run/vpp/cli.sock"
+# VPP CLI replies are CRLF — strip CR before parsing
+vpp_out() { $VPP "$@" 2>/dev/null | tr -d "\r"; }
 GRE_NAME="${GRE_NAME:-gre-pd}"
 FOU_PORT="${FOU_PORT:-4754}"
 # FOU MTU must leave room for UDP+FOU overhead
@@ -76,34 +79,55 @@ pick_underlay() {
 }
 
 ensure_exit_tap() {
-  if ! $VPP show interface 2>/dev/null | grep -q "^${EXIT_TAP_NAME:-tap${EXIT_TAP_ID}}\\|^tap${EXIT_TAP_ID}"; then
-    if ! $VPP show interface 2>/dev/null | grep -q "^tap${EXIT_TAP_ID}"; then
+  tap_if="tap${EXIT_TAP_ID}"
+  # show interface pads names with spaces — never match ^tapN
+  if ! vpp_out show interface | awk -v t="$tap_if" '$1==t{found=1} END{exit !found}'; then
+    if [ "${PD_EXIT_TAP_CREATE:-0}" = 1 ]; then
       $VPP create tap id "$EXIT_TAP_ID" host-if-name "$EXIT_TAP" host-mtu-size 1500 \
-        num-rx-queues 2 num-tx-queues 2 rx-ring-size 1024 tx-ring-size 1024 2>/dev/null || true
+        num-rx-queues 1 num-tx-queues 1 rx-ring-size 1024 tx-ring-size 1024 2>/dev/null || true
+    else
+      echo "pd-linux-gre: exit tap ${tap_if}/${EXIT_TAP} missing — refuse create (set PD_EXIT_TAP_CREATE=1 to override)" >&2
+      return 1
     fi
   fi
-  $VPP set interface state "tap${EXIT_TAP_ID}" up 2>/dev/null || true
+  # Resolve host IF name from VPP (tap30 → vpp6-host)
+  host_if=$(vpp_out show tap | awk -v id="$EXIT_TAP_ID" '
+    $1=="Interface:" && $2==("tap" id) {want=1}
+    want && /name "/ { gsub(/"/,"",$2); print $2; exit }
+  ')
+  [ -n "$host_if" ] && EXIT_TAP="$host_if"
+  $VPP set interface state "$tap_if" up 2>/dev/null || true
   ip link set "$EXIT_TAP" up 2>/dev/null || true
 
-  if ! $VPP show interface address "tap${EXIT_TAP_ID}" 2>/dev/null | grep -q "${EXIT_VPP_IP%/*}"; then
-    $VPP set interface ip address "tap${EXIT_TAP_ID}" "$EXIT_VPP_IP" 2>/dev/null || true
+  if ! $VPP show interface address "$tap_if" 2>/dev/null | grep -q "${EXIT_VPP_IP%/*}"; then
+    $VPP set interface ip address del "$tap_if" all 2>/dev/null || true
+    $VPP set interface ip address "$tap_if" "$EXIT_VPP_IP" 2>/dev/null || true
   fi
   ip addr replace "$EXIT_LINUX_IP" dev "$EXIT_TAP" 2>/dev/null || true
   ip link set "$EXIT_TAP" up 2>/dev/null || true
+  sysctl -q -w "net.ipv4.conf.${EXIT_TAP}.rp_filter=0" 2>/dev/null || true
 
   linux_peer=${EXIT_LINUX_IP%/*}
   vpp_peer=${EXIT_VPP_IP%/*}
+  tap_net=$(printf '%s\n' "$EXIT_VPP_IP" | awk -F'[./]' '{printf "%s.%s.%s.0/%s\n",$1,$2,$3,$5}')
 
   $VPP ip table add "$PBR_TABLE" 2>/dev/null || true
   $VPP ip route del table "$PBR_TABLE" 0.0.0.0/0 2>/dev/null || true
-  $VPP ip route add table "$PBR_TABLE" 0.0.0.0/0 via "$linux_peer" "tap${EXIT_TAP_ID}" 2>/dev/null || true
+  $VPP ip route add table "$PBR_TABLE" 0.0.0.0/0 via "$linux_peer" "$tap_if" 2>/dev/null || true
 
   ip route replace 79.172.242.0/24 via "$vpp_peer" dev "$EXIT_TAP" 2>/dev/null || true
 
+  # Detached leftover rule from old vpp-pd-exit name
+  ip rule del iif vpp-pd-exit lookup 100 2>/dev/null || true
   ip rule del iif "$EXIT_TAP" lookup 100 2>/dev/null || true
   ip rule add iif "$EXIT_TAP" lookup 100 priority 100
   ip route replace default via "$INNER_PEER" dev "$GRE_NAME" table 100 2>/dev/null || true
-  ip route replace "${vpp_peer}/30" dev "$EXIT_TAP" table 100 2>/dev/null || true
+  ip route replace "$tap_net" dev "$EXIT_TAP" table 100 2>/dev/null || true
+
+  iptables -C FORWARD -i "$EXIT_TAP" -o "$GRE_NAME" -j ACCEPT 2>/dev/null || \
+    iptables -I FORWARD 1 -i "$EXIT_TAP" -o "$GRE_NAME" -j ACCEPT
+  iptables -C FORWARD -i "$GRE_NAME" -o "$EXIT_TAP" -j ACCEPT 2>/dev/null || \
+    iptables -I FORWARD 1 -i "$GRE_NAME" -o "$EXIT_TAP" -j ACCEPT
 }
 
 ensure_fou_recv() {
@@ -165,6 +189,16 @@ if [ -x /usr/local/sbin/pd-lan-prepare.sh ]; then
   /usr/local/sbin/pd-lan-prepare.sh >/dev/null || true
 fi
 
+# lan-prepare has crashed VPP under churn — wait before exit-tap checks
+i=0
+while [ "$i" -lt 15 ]; do
+  if $VPP show version >/dev/null 2>&1; then
+    break
+  fi
+  i=$((i + 1))
+  sleep 1
+done
+
 LOCAL=$(pick_underlay) || exit 1
 REMOTE_FOR_VPS=$LOCAL
 USE_FOU=0
@@ -173,7 +207,6 @@ if is_v4 "$LOCAL" && is_priv_v4 "$LOCAL"; then
   if [ -n "$PUB" ]; then
     REMOTE_FOR_VPS=$PUB
   fi
-  # Proximus NAT drops raw GRE outbound; FOU/UDP works.
   case "${PD_GRE_FOU:-auto}" in
     0|no|off|false) USE_FOU=0 ;;
     *) USE_FOU=1 ;;
@@ -186,18 +219,35 @@ elif is_v4 "$LOCAL"; then
   esac
 fi
 
-build_gre "$LOCAL" "$REMOTE_FOR_VPS" "$USE_FOU"
+# Avoid tearing a healthy FOU GRE (VPS sync + link del flaps the path / stressed VPP).
+gre_ok=0
+if ip link show "$GRE_NAME" >/dev/null 2>&1 \
+  && ip -d link show "$GRE_NAME" 2>/dev/null | grep -q "local $LOCAL" \
+  && { [ "$USE_FOU" != 1 ] || ip -d link show "$GRE_NAME" 2>/dev/null | grep -q 'encap fou'; } \
+  && ping -c 1 -W 2 "$INNER_PEER" >/dev/null 2>&1; then
+  gre_ok=1
+  echo "pd-linux-gre: keep existing gre-pd (inner ok)"
+fi
+if [ "$gre_ok" = 0 ]; then
+  build_gre "$LOCAL" "$REMOTE_FOR_VPS" "$USE_FOU"
+fi
 
-if [ "${PD_ENABLE_EXIT_TAP:-0}" = 1 ]; then
-  ensure_exit_tap
-  iptables -C FORWARD -i "$EXIT_TAP" -o "$GRE_NAME" -j ACCEPT 2>/dev/null || \
-    iptables -I FORWARD -i "$EXIT_TAP" -o "$GRE_NAME" -j ACCEPT
-  iptables -C FORWARD -i "$GRE_NAME" -o "$EXIT_TAP" -j ACCEPT 2>/dev/null || \
-    iptables -I FORWARD -i "$GRE_NAME" -o "$EXIT_TAP" -j ACCEPT
+EXIT_OK=0
+if [ "${PD_ENABLE_EXIT_TAP:-1}" = 1 ]; then
+  if ensure_exit_tap; then
+    EXIT_OK=1
+  else
+    echo "pd-linux-gre: exit tap wire failed" >&2
+  fi
+fi
+
+LAN_OK=0
+if ping -c 1 -W 2 79.172.242.1 >/dev/null 2>&1; then
+  LAN_OK=1
 fi
 
 if ping -c 2 -W 3 "$INNER_PEER" >/dev/null 2>&1; then
-  echo "pd-linux-gre: READY local=$LOCAL vps_remote=$REMOTE_FOR_VPS fou=$USE_FOU inner_ok=1"
+  echo "pd-linux-gre: READY local=$LOCAL vps_remote=$REMOTE_FOR_VPS fou=$USE_FOU inner_ok=1 exit=$EXIT_OK lan_gw=$LAN_OK"
 else
-  echo "pd-linux-gre: UP local=$LOCAL vps_remote=$REMOTE_FOR_VPS fou=$USE_FOU inner_ok=0"
+  echo "pd-linux-gre: UP local=$LOCAL vps_remote=$REMOTE_FOR_VPS fou=$USE_FOU inner_ok=0 exit=$EXIT_OK lan_gw=$LAN_OK"
 fi
