@@ -77,3 +77,9 @@ Path (interim): `host ↔ VPP table 81 ↔ loop208/VXLAN ↔ tap36 → Linux SNA
 - `pd-vxlan-vtep-watchdog` — Digi IPv6 drift without PPPoE flap
 - Proximus iperf baseline ~400 Mbps (shared by PD via tap36) in `/etc/pd/pd-proximus-baseline.txt`
 - Cutover dry-run: exits cleanly without Digi IPv6
+
+## Soft Digi cutover (crash-aware)
+- **Never** `host-interface` / af_packet on `enp36s0` (SEGV)
+- PPPoE enable: **no VPP restart** (plugins preloaded)
+- Cutover: create **new** `vxlan_tunnel209` first → update VPS → only then `PD_CUTOVER_TEAR_OLD=1` to drop Proximus tunnel/tap
+- PPPoE native script is idempotent (won’t rediscover a live session)
