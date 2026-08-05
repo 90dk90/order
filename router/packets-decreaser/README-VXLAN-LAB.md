@@ -34,24 +34,20 @@ Linux GPE requires `external` (not simple P2P). Classic VXLAN interops both side
 - `rx_q1/q2/q3` non-zero under multi-flow lab traffic
 - GRE path still healthy on 172.16.207.0/30
 
-## Temporary /24 hairpin (Proximus, GRE6 down)
-While Digi has no global WAN IPv6, PD `/24` can hairpin over the Proximus Linux VXLAN
-(no VPP plugin, no PPPoE restart):
+## Mode: Proximus VPP VXLAN (PPPoE disabled)
+
+Current path: **VXLAN encapsulation inside VPP**, outer underlay via Proximus.
+Digi PPPoE is masked (`x520wan` down). Do not use `af_packet` on `enp36s0` —
+it SIGSEGVs VPP 26.06 on this Digi; underlay is `tap36 ↔ Linux ↔ enp36s0` instead.
 
 ```bash
-# Digi
-/usr/local/sbin/pd-vxlan-prox-digi.sh
-/usr/local/sbin/pd-vxlan-prox-hairpin-digi.sh
+# Digi (loads vxlan_plugin once, disables PPPoE)
+/usr/local/sbin/pd-vpp-prox-vxlan-activate.sh
 # VPS
-/usr/local/sbin/pd-vxlan-prox-hairpin-vps.sh
+DIGI_PROX_PUB=$(cat /run/pd-vpp-prox-pub.txt)  # from Digi
+/usr/local/sbin/pd-vpp-prox-vxlan-vps.sh
 ```
 
-Path: `host ↔ VPP table 81 ↔ tap208 ↔ vxlan-prox ↔ VPS vxlan-lab ↔ BGP`.
+Path: `host ↔ VPP table 81 ↔ loop208/VXLAN ↔ tap36 → Linux SNAT → Proximus → VPS vxlan-lab ↔ BGP`.
 
-Revert when GRE6 is back:
-```bash
-# Digi then VPS
-/usr/local/sbin/pd-vxlan-prox-hairpin-digi-off.sh
-/usr/local/sbin/pd-vxlan-prox-hairpin-vps-off.sh
-# then let pd-gre-watchdog reclaim gre0
-```
+Linux keeps `192.168.129.7` (Tailscale). VXLAN SNAT/UPnP uses `192.168.129.8`.

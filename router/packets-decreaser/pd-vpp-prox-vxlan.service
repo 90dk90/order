@@ -1,0 +1,16 @@
+[Unit]
+Description=PD VPP VXLAN over Proximus (PPPoE disabled)
+Requires=vpp.service
+After=vpp.service vpp-bootstrap.service
+BindsTo=vpp.service
+PartOf=vpp.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/pd-lan-prepare.sh
+ExecStart=/usr/local/sbin/pd-vpp-prox-vxlan.sh
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

@@ -16,7 +16,17 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 
-$VPP set interface state x520wan up
+# PD_PPPOE=0 / MODE=disabled → leave Digi WAN down (Proximus VPP VXLAN mode)
+PD_PPPOE=1
+if [ -r /etc/default/pd-underlay ]; then
+  # shellcheck disable=SC1091
+  . /etc/default/pd-underlay
+fi
+if [ "${PD_PPPOE:-1}" = "0" ] || [ "$MODE" = "disabled" ]; then
+  $VPP set interface state x520wan down
+else
+  $VPP set interface state x520wan up
+fi
 $VPP set interface state x520lan up
 # Unused X520 ports: keep down (avoid poll tax on GRE single-RSS worker)
 $VPP set interface state x520extra0 down
@@ -27,6 +37,13 @@ if ! $VPP show interface | /bin/grep -q '^tap30[[:space:]]'; then
   $VPP create tap id 30 host-if-name vpp6-host host-mtu-size 1500 num-rx-queues 4 num-tx-queues 4 rx-ring-size 4096 tx-ring-size 4096
 fi
 $VPP set interface state tap30 up
+
+if [ "${PD_PPPOE:-1}" = "0" ] || [ "$MODE" = "disabled" ]; then
+  /usr/local/sbin/vpp-rx-placement.sh || true
+  /usr/local/sbin/vpp-performance-tuning.sh || true
+  /sbin/ip link set vpp6-host up 2>/dev/null || true
+  exit 0
+fi
 
 if [ "$MODE" = "native" ]; then
   # Native Digi PPPoE: do NOT L2-bridge x520wan to Linux
