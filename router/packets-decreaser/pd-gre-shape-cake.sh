@@ -1,11 +1,10 @@
 #!/bin/bash
-# Shape gre-pd with CAKE just under Digi PPPoE capacity to kill Digi bufferbloat.
-# VPS TX (gre-pd root)  = download toward Digi/PVE
-# VPS RX via ifb-pd     = upload from Digi/PVE
+# Shape gre-pd DOWNLOAD with CAKE just under Digi capacity.
+# Upload bufferbloat must be shaped on PVE (see pd-pve-upload-cake.sh) —
+# VPS IFB is too late (Digi uplink already queued).
 #
-# Set in /etc/pd-gre.env (~95% of PVE speedtest via PD, keeps near-max rate):
+# /etc/pd-gre.env:
 #   DIGI_DOWN_MBIT=2600
-#   DIGI_UP_MBIT=3000
 #   PD_SHAPE=1
 # Disable: PD_SHAPE=0
 set -euo pipefail
@@ -14,39 +13,27 @@ ENV=/etc/pd-gre.env
 
 PD_SHAPE="${PD_SHAPE:-0}"
 DIGI_DOWN_MBIT="${DIGI_DOWN_MBIT:-2600}"
-DIGI_UP_MBIT="${DIGI_UP_MBIT:-3000}"
 IFACE="${PD_SHAPE_IFACE:-gre-pd}"
-IFB="${PD_SHAPE_IFB:-ifb-pd}"
-
-# Opt-in (PD_SHAPE=1). Rates must sit just under Digi/GRE peak to kill bufferbloat
-# without a big throughput cut (unlike a low artificial cap).
 
 if [ "$PD_SHAPE" = 0 ]; then
   tc qdisc del dev "$IFACE" root 2>/dev/null || true
   tc qdisc del dev "$IFACE" ingress 2>/dev/null || true
-  tc qdisc del dev "$IFB" root 2>/dev/null || true
-  ip link del "$IFB" 2>/dev/null || true
+  tc qdisc del dev ifb-pd root 2>/dev/null || true
+  ip link del ifb-pd 2>/dev/null || true
   echo "pd-gre-shape: disabled"
   exit 0
 fi
 
 ip link show "$IFACE" >/dev/null 2>&1 || { echo "pd-gre-shape: $IFACE missing"; exit 0; }
 modprobe sch_cake 2>/dev/null || true
-modprobe ifb 2>/dev/null || true
-modprobe sch_ingress 2>/dev/null || true
 
-# Download path: Internet → VPS → gre-pd → Digi (fills Digi downlink buffer if uncapped)
+# Drop any old IFB upload path (ineffective for Digi uplink bloat)
+tc qdisc del dev "$IFACE" ingress 2>/dev/null || true
+tc qdisc del dev ifb-pd root 2>/dev/null || true
+ip link del ifb-pd 2>/dev/null || true
+
+# Download only: Internet → VPS → gre-pd → Digi
 tc qdisc replace dev "$IFACE" root cake bandwidth "${DIGI_DOWN_MBIT}mbit" \
   besteffort dual-dsthost nat wash ack-filter
 
-# Upload path: Digi → gre-pd RX → redirect IFB → CAKE
-ip link add "$IFB" type ifb 2>/dev/null || true
-ip link set "$IFB" up
-tc qdisc replace dev "$IFACE" handle ffff: ingress
-tc filter del dev "$IFACE" parent ffff: 2>/dev/null || true
-tc filter add dev "$IFACE" parent ffff: protocol all u32 match u32 0 0 \
-  action mirred egress redirect dev "$IFB"
-tc qdisc replace dev "$IFB" root cake bandwidth "${DIGI_UP_MBIT}mbit" \
-  besteffort dual-srchost nat wash ack-filter
-
-echo "pd-gre-shape: cake down=${DIGI_DOWN_MBIT}mbit up=${DIGI_UP_MBIT}mbit on $IFACE/$IFB"
+echo "pd-gre-shape: cake DOWNLOAD ${DIGI_DOWN_MBIT}mbit on $IFACE (upload=shape on PVE)"
