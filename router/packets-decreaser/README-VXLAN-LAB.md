@@ -96,3 +96,19 @@ Path: `host ↔ VPP table 81 ↔ loop208/VXLAN209 ↔ Digi IPv6 (x520wan/pppoe) 
 - Digi deploy 2026-08-05: **one** VPP restart; plugin `PPPoEClient + soft-handoff (PD Option B)`; `show pppoeclient soft-handoff` → on
 - Backup: `/root/pppoeclient_plugin.so.bak-pre-handoff-*`
 - Rebuild against Digi `vpp-dev` is ABI248-native (binary stride patch not needed for that `.so`)
+
+### 2.5 A/B measure (2026-08-05) — VPS→1vps via Digi WAN RX
+Path: `iperf3 -c 79.172.242.2` from PD VPS (VXLAN outer hits Digi PPPoE RX → soft-handoff).
+
+| Test | soft-handoff | Receiver | Digi `rx_missed` | HANDOFF_IP6 | Congestion drops |
+|---|---|---:|---:|---:|---:|
+| P8 20s | **on** | **1.94 Gbps** | **31 583** | 1 263 903 | 15 953 |
+| P8 20s | off | 1.67 Gbps | 63 448 | 0 | 0 |
+| P1 15s | on | ~511 Mbps | (noisy) | yes | some |
+| P1 15s | off | ~484 Mbps | (noisy) | 0 | 0 |
+
+Notes:
+- Soft-handoff **on** wins on 8-stream (~+16% Gbps, ~−50% `rx_missed`); still far from line rate.
+- WAN RX remains **100% `rx_q0`** (expected with PPPoE).
+- Frame-queue **congestion drops** under load — next knob (needs rebuild + 1 restart): `drop_on_congestion=0` and/or larger FQ nelts.
+- Left enabled: `set pppoeclient soft-handoff on`.
