@@ -65,12 +65,16 @@ fi
 
 ip addr replace "$INNER_LOCAL" dev gre-pd 2>/dev/null || true
 ip link set gre-pd mtu "$MTU" up
-# Full dedicated /24 into GRE (Infrawire / Digi VPP underlay can absorb scan noise)
-ip route del blackhole 79.172.242.0/24 2>/dev/null || true
+# Live LAN /32s into GRE; unused /24 blackholed locally (see pd-gre-lan-hosts.sh)
 if [ -x /usr/local/sbin/pd-gre-lan-hosts.sh ]; then
   /usr/local/sbin/pd-gre-lan-hosts.sh
 else
   ip route replace 79.172.242.0/24 via "$INNER_PEER" dev gre-pd
+fi
+
+# CAKE under Digi capacity — kills Digi PPPoE bufferbloat (latency spikes under load)
+if [ -x /usr/local/sbin/pd-gre-shape-cake.sh ]; then
+  /usr/local/sbin/pd-gre-shape-cake.sh || true
 fi
 
 sysctl -q -w net.ipv4.ip_forward=1

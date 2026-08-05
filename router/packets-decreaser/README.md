@@ -34,6 +34,17 @@ When Digi VTEP is known:
 ```
 (ip6gre, `GRE_FOU=0`)
 
+## Latency / Digi bufferbloat
+Digi PPPoE fills buffers under load → spikes 100–300 ms. Fix = **CAKE on VPS `gre-pd`** just under Digi sync:
+
+```bash
+# /etc/pd-gre.env — set to ~90% of Digi speedtest (no tunnel)
+DIGI_DOWN_MBIT=850
+DIGI_UP_MBIT=80
+PD_SHAPE=1
+/usr/local/sbin/pd-gre-shape-cake.sh
+```
+
 ## Roles
 | Path | Role |
 |------|------|
