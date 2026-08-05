@@ -29,7 +29,7 @@ if $VPP show interface 2>/dev/null | grep -q '^tap20[[:space:]]'; then
   for queue in $QUEUES; do
     $VPP set interface rx-mode tap20 queue "$queue" interrupt 2>/dev/null || true
   done
-done
+fi
 
 # Admin / Digi LCP — interrupt, do not steal wk0 poll budget from GRE q0
 if $VPP show interface 2>/dev/null | grep -q '^tap30[[:space:]]'; then
