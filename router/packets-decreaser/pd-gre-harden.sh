@@ -15,8 +15,9 @@ OUT_IDX_FILE=/run/pd-digi-wan-acl-out.idx
 
 pick_digi_vtep() {
   obs=$($VPP show pppoe client detail 2>/dev/null | sed -n 's/.*wan-ipv6 observed \([^ /]*\).*/\1/p' | tr -d '\r' | head -1)
+  obs=${obs%%/*}
   case "$obs" in
-    ""|"<none>"|none|2a01:4700:80ff:*) obs="" ;;
+    ""|"<none>"|none) obs="" ;;
   esac
   if [ -n "$obs" ]; then
     printf '%s\n' "$obs"
@@ -24,7 +25,6 @@ pick_digi_vtep() {
   fi
   # Only use interface L3 (must actually be present) — ignore stale /run files
   $VPP show interface addr "$DIGI_IF" 2>/dev/null | awk '
-    /L3 2a01:4700:80ff:/{next}
     /L3 2a01:4700:/{gsub(/\/.*/,"",$2); print $2; exit}
   '
 }

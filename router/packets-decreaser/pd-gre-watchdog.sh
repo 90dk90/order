@@ -29,15 +29,16 @@ if [ -x /usr/local/sbin/pd-lan-prepare.sh ]; then
 fi
 
 SRC=$($VPP show pppoe client detail 2>/dev/null | sed -n 's/.*wan-ipv6 observed \([^ /]*\).*/\1/p' | tr -d '\r' | head -1)
+SRC=${SRC%%/*}
 case "$SRC" in
-  ""|"<none>"|none|2a01:4700:80ff:*)
-    # Quiet wait for real Digi global; do not recreate PPPoE
+  ""|"<none>"|none)
+    # Quiet wait for Digi global; do not recreate PPPoE
     exit 0 ;;
 esac
 
 OLD=$(cat /run/pd-vtep-live.txt 2>/dev/null || true)
 case "$OLD" in
-  ""|"<none>"|none|2a01:4700:80ff:*) OLD="" ;;
+  ""|"<none>"|none) OLD="" ;;
 esac
 
 GRE_OK=1

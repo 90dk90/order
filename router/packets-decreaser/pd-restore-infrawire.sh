@@ -6,7 +6,7 @@
 # Safe principles (avoid SIGSEGV churn):
 #   - Do not run pd-linux-gre-activate / FOU Proximus path
 #   - LAN FIB only if missing (pd-lan-prepare soft)
-#   - GRE activate only when Digi has real 807f/817f wan-ipv6
+#   - GRE activate when Digi has observed wan-ipv6 (807f/817f/80ff/…)
 #   - Disable linux GRE watchdog timer
 set -eu
 
