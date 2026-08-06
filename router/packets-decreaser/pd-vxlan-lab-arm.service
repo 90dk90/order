@@ -1,0 +1,12 @@
+[Unit]
+Description=PD VXLAN lab arm (wait Digi IPv6 — never touches PPPoE)
+After=vpp.service vpp-pppoe-native.service
+Requires=vpp.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pd-vxlan-lab-arm.sh
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

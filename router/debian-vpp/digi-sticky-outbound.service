@@ -1,0 +1,14 @@
+[Unit]
+Description=Digi sticky outbound (DISABLED — PD GRE is primary egress)
+After=vpp.service vpp-pppoe-native.service
+Wants=vpp.service vpp-pppoe-native.service
+# Abandoned: Digi sticky (vpp-classify/tap) caused VPP SIGSEGV and LAN ARP storms.
+# All traffic uses PD GRE via pd-gre-activate.sh. Re-enable only with PD_ENABLE_STICKY=1.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+
+[Install]
+WantedBy=multi-user.target
