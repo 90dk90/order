@@ -1,7 +1,12 @@
 #!/bin/bash
 IF=enp16s0
 ethtool -G "$IF" rx 8192 tx 8192 2>/dev/null || ethtool -G "$IF" rx 4096 tx 4096 2>/dev/null || true
-ethtool -C "$IF" rx-usecs 8 tx-usecs 8 2>/dev/null || true
+# Keep interrupt coalescing low; 8µs was fine for throughput but idle ICMP
+# is cleaner closer to 0/1 on this ixgbe.
+ethtool -C "$IF" rx-usecs 1 tx-usecs 0 2>/dev/null || \
+  ethtool -C "$IF" rx-usecs 8 tx-usecs 8 2>/dev/null || true
+# Pause frames caused ~300-800ms quantized ICMP spikes Digi VPP↔PVE (measured).
+ethtool -A "$IF" autoneg off rx off tx off 2>/dev/null || true
 ethtool -K "$IF" gro on gso on tso on sg on lro off 2>/dev/null || true
 ip link set "$IF" txqueuelen 20000 2>/dev/null || true
 ip link set vmbr0 txqueuelen 20000 2>/dev/null || true

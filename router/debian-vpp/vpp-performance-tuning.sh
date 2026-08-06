@@ -60,6 +60,9 @@ for iface in ppp0 digi-wan vpp-pppoe vpp6-host vpp-gre-fw vpp-mgmt; do
   case "$iface" in
     ppp0|digi-wan|vpp6-host|vxlan-digi|vpp-pppoe)
       if [ "$iface" = "digi-wan" ]; then
+        # Kernel WAN: pause frames on Digi fibre NIC must stay off (same class of
+        # quantized delay as PVE enp16s0).
+        ethtool -A digi-wan autoneg off rx off tx off 2>/dev/null || true
         /sbin/tc qdisc replace dev "$iface" root handle 1: mq 2>/dev/null || true
         for i in 1 2 3 4 5 6; do
           /sbin/tc qdisc replace dev "$iface" parent 1:$i pfifo_fast 2>/dev/null || true
