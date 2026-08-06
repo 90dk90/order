@@ -1,0 +1,29 @@
+# /etc/ppp/peers/digi — Digi Belgium fibre (Linux kernel PPPoE)
+# Install: install -m 0600 pppoe-peers-digi.example /etc/ppp/peers/digi
+# Secrets: /etc/ppp/chap-secrets →  "user" * "password" *
+#
+# Interface = VPP host TAP bridged to Digi WAN (x520wan), NOT a DPDK port.
+
+plugin rp-pppoe.so
+vpp-pppoe
+
+user "REPLACE_WITH_DIGI_USER"
+noipdefault
+defaultroute
+replacedefaultroute
+hide-password
+noauth
+persist
+maxfail 0
+holdoff 5
+lcp-echo-interval 20
+lcp-echo-failure 5
+mtu 1492
+mru 1492
++ipv6
+ipv6cp-use-ipaddr
+usepeerdns
+
+# If Digi requires a VLAN tag on your path, create it first then change the
+# interface line above to e.g. vpp-pppoe.20:
+#   ip link add link vpp-pppoe name vpp-pppoe.20 type vlan id 20
