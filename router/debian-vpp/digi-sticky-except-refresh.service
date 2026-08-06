@@ -1,0 +1,7 @@
+[Unit]
+Description=Refresh Digi sticky domain exceptions (DNS→dst)
+After=vpp.service digi-sticky-outbound.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/digi-sticky-except-refresh.sh

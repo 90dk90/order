@@ -5,21 +5,33 @@
 - **Outbound bulk TCP** (apt, speedtest, curl): Digi CGNAT SNAT — low latency / high BW
 - **Inbound + game UDP + service TCP replies**: PD `/24` via VXLAN — players keep `79.172.242.x`
 
-## Design (`mode=vpp-classify-ephemeral`)
+## Design (`mode=vpp-classify-ephemeral+except`)
 
 ```
-loop10 classify
-  TCP src_port >= 32768 (Linux ephemeral, bit 0x8000)
-      → fib 82 → tap80 ──L2 sticky-wire── tap81/table83 → NAT44 → digi
-  miss (any TCP service port 1–32767, UDP, ICMP)
-      → fib 81 → loop208 VXLAN (PD / dedicated IP)
+loop10 classify chain:
+  1) src exceptions  → fib 81 PD
+  2) dst/domain except → fib 81 PD
+  3) TCP sport >= 32768 → fib 82 → hairpin → NAT → digi
+  miss → fib 81 PD (VXLAN /24)
 ```
 
-No service-port whitelist: any listen port on `79.172.242.x` keeps PD replies.
-Only client outbound (curl/apt/speedtest) uses Digi CGNAT.
+### User whitelist
 
-NAT must **not** sit on BVI `loop10` (feature order runs NAT before classify → broken / dangerous).
-Hairpin taps keep NAT on `tap81` after fib redirect.
+Edit on Digi: `/etc/pd/digi-sticky-except.conf`
+
+```
+src 79.172.242.3          # FROM this IP → always PD
+dst 1.2.3.4               # TO this IP → always PD
+domain api.lumenvm.cloud   # resolve A → dst (timer refreshes every 15m)
+```
+
+Reload without tearing sticky:
+
+```bash
+/usr/local/sbin/digi-sticky-except-reload.sh
+```
+
+NAT must **not** sit on BVI `loop10`. Hairpin taps keep NAT on `tap81`.
 
 **Never** on enable/disable: `ip route del` on LAN covers, `set interface ip table loop10`,
 delete `loop10` addresses — those SIGSEGV VPP 26.06 (`fib_table_lookup_exact_match`).
