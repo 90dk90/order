@@ -24,7 +24,7 @@ LAB_VPS="${LAB_VPS:-172.16.208.1}"
 LAB_DIGI="${LAB_DIGI:-172.16.208.2}"
 LAB_VPS_MAC="${LAB_VPS_MAC:-de:ad:00:00:00:d2}"
 LAB_DIGI_MAC="${LAB_DIGI_MAC:-de:ad:00:00:00:d1}"
-HOSTS="${HAIRPIN_HOSTS:-79.172.242.1 79.172.242.2 79.172.242.3 79.172.242.10 79.172.242.48}"
+LAN_PREFIX="${LAN_PREFIX:-79.172.242.0/24}"
 
 modprobe vxlan
 ip6tables -C INPUT -p udp --dport "$PORT" -j ACCEPT 2>/dev/null || \
@@ -39,12 +39,10 @@ ip addr replace "${LAB_VPS}/30" dev "$IFACE"
 ip link set "$IFACE" mtu "$MTU" up
 ip neigh replace "$LAB_DIGI" lladdr "$LAB_DIGI_MAC" nud permanent dev "$IFACE"
 
-# Prefer vxlan-lab over gre-pd for PD hosts; leave gre-pd unused
-for ip in $HOSTS; do
-  ip route replace "$ip/32" via "$LAB_DIGI" dev "$IFACE"
-done
+# Whole customer /24 via Digi — no per-DIP /32 maintenance
+ip route replace "$LAN_PREFIX" via "$LAB_DIGI" dev "$IFACE"
 # Do not use gre-pd
 ip link set gre-pd down 2>/dev/null || true
 
-echo "pd-vpp-digi-vxlan-vps: $IFACE local=$LOCAL remote=$REMOTE vni $VNI (GRE down)"
+echo "pd-vpp-digi-vxlan-vps: $IFACE local=$LOCAL remote=$REMOTE vni $VNI cover=$LAN_PREFIX (GRE down)"
 ping -c 2 -W 2 "$LAB_DIGI" 2>&1 | tail -5 || true

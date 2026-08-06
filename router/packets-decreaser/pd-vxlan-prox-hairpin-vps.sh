@@ -7,7 +7,7 @@ set -euo pipefail
 
 VXLAN_IF="${HAIRPIN_VXLAN_IF:-vxlan-lab}"
 DIGI_INNER="${LAB_DIGI:-172.16.208.2}"
-HOSTS="${HAIRPIN_HOSTS:-79.172.242.1 79.172.242.2 79.172.242.3 79.172.242.10 79.172.242.48}"
+LAN_PREFIX="${LAN_PREFIX:-79.172.242.0/24}"
 
 if ! ip link show "$VXLAN_IF" &>/dev/null; then
   echo "missing $VXLAN_IF — run pd-vxlan-lab-vps.sh first" >&2
@@ -18,9 +18,7 @@ sysctl -q -w net.ipv4.ip_forward=1
 sysctl -q -w net.ipv4.conf.all.rp_filter=0
 sysctl -q -w "net.ipv4.conf.${VXLAN_IF}.rp_filter=0" 2>/dev/null || true
 
-for ip in $HOSTS; do
-  ip route replace "$ip/32" via "$DIGI_INNER" dev "$VXLAN_IF"
-done
+ip route replace "$LAN_PREFIX" via "$DIGI_INNER" dev "$VXLAN_IF"
 
 iptables -C FORWARD -o "$VXLAN_IF" -j ACCEPT 2>/dev/null || iptables -I FORWARD 2 -o "$VXLAN_IF" -j ACCEPT
 iptables -C FORWARD -i "$VXLAN_IF" -j ACCEPT 2>/dev/null || iptables -I FORWARD 3 -i "$VXLAN_IF" -j ACCEPT
@@ -40,7 +38,5 @@ elif [ -d /etc/iptables ]; then
   iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
 fi
 
-echo "pd-vxlan-prox-hairpin-vps: ${HOSTS} → via ${DIGI_INNER} dev ${VXLAN_IF}"
-for ip in $HOSTS; do
-  ping -c 1 -W 2 "$ip" 2>&1 | tail -2 || true
-done
+echo "pd-vxlan-prox-hairpin-vps: ${LAN_PREFIX} → via ${DIGI_INNER} dev ${VXLAN_IF}"
+ping -c 1 -W 2 79.172.242.2 2>&1 | tail -2 || true

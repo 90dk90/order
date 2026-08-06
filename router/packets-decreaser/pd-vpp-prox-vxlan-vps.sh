@@ -21,7 +21,7 @@ LAB_VPS="${LAB_VPS:-172.16.208.1}"
 LAB_DIGI="${LAB_DIGI:-172.16.208.2}"
 LAB_VPS_MAC="${LAB_VPS_MAC:-de:ad:00:00:00:d2}"
 LAB_DIGI_MAC="${LAB_DIGI_MAC:-de:ad:00:00:00:d1}"
-HOSTS="${HAIRPIN_HOSTS:-79.172.242.1 79.172.242.2 79.172.242.3 79.172.242.10 79.172.242.48}"
+LAN_PREFIX="${LAN_PREFIX:-79.172.242.0/24}"
 
 modprobe vxlan
 iptables -C INPUT -p udp --dport "$PORT" -j ACCEPT 2>/dev/null || \
@@ -46,11 +46,9 @@ ip addr replace "${LAB_VPS}/30" dev "$IFACE"
 ip link set "$IFACE" mtu "$MTU" up
 ip neigh replace "$LAB_DIGI" lladdr "$LAB_DIGI_MAC" nud permanent dev "$IFACE"
 
-for ip in $HOSTS; do
-  ip route replace "$ip/32" via "$LAB_DIGI" dev "$IFACE"
-done
+ip route replace "$LAN_PREFIX" via "$LAB_DIGI" dev "$IFACE"
 iptables -C FORWARD -o "$IFACE" -j ACCEPT 2>/dev/null || iptables -I FORWARD 2 -o "$IFACE" -j ACCEPT
 iptables -C FORWARD -i "$IFACE" -j ACCEPT 2>/dev/null || iptables -I FORWARD 3 -i "$IFACE" -j ACCEPT
 
-echo "pd-vpp-prox-vxlan-vps: $IFACE local=$LOCAL remote=$REMOTE vni $VNI"
+echo "pd-vpp-prox-vxlan-vps: $IFACE local=$LOCAL remote=$REMOTE vni $VNI cover=$LAN_PREFIX"
 ping -c 2 -W 2 "$LAB_DIGI" 2>&1 | tail -5 || true

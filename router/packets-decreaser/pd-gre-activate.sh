@@ -8,7 +8,7 @@ VPP="/usr/bin/vppctl -s /run/vpp/cli.sock"
 LAN_BD="${LAN_BD:-10}"
 LAN_GW="${LAN_GW:-79.172.242.1}"
 LAN_PREFIX="${LAN_PREFIX:-79.172.242.0/24}"
-LAN_HOSTS="${LAN_HOSTS:-79.172.242.2:c4:62:37:0d:2f:96 79.172.242.3:c4:62:37:0d:2f:96 79.172.242.10:c4:62:37:0d:2f:96 79.172.242.48:c4:62:37:0d:2f:96}"
+# LAN cover24 handled by pd-lan-prepare.sh (whole /24 via PVE, no per-DIP /32)
 
 # Digi VTEP = pppoeclient wan-ipv6 observed (807f/817f/80ff/…).
 pick_digi_vtep() {
