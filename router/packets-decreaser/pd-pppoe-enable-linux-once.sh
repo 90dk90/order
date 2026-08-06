@@ -19,7 +19,12 @@ if ! command -v vppctl >/dev/null 2>&1; then
 fi
 
 if ! systemctl cat pppoe-vpp.service >/dev/null 2>&1; then
-  echo "pd-pppoe-enable-linux-once: pppoe-vpp.service missing on Digi — install debian-vpp/pppoe-vpp.* first" >&2
+  echo "pd-pppoe-enable-linux-once: pppoe-vpp.service missing on Digi" >&2
+  exit 1
+fi
+
+if [ ! -f /etc/ppp/peers/vpp-pppoe ] && [ ! -f /etc/ppp/peers/digi ]; then
+  echo "pd-pppoe-enable-linux-once: missing /etc/ppp/peers/vpp-pppoe (or digi)" >&2
   exit 1
 fi
 

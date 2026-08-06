@@ -8,6 +8,22 @@
 set -euo pipefail
 . /etc/pd/pd-vxlan-lab.conf 2>/dev/null || . "$(dirname "$0")/pd-vxlan-lab.conf"
 . /etc/pd/pd-gre.conf 2>/dev/null || true
+. /etc/default/vpp-pppoe-mode 2>/dev/null || true
+
+# Linux pppd owns Digi GUA on ppp0 — VPP cannot source VXLAN from it.
+# Use Linux VXLAN + tap30 hairpin (symmetric with VPS classic VXLAN).
+if [ "${VPP_PPPOE_MODE:-}" = "linux" ]; then
+  if [ ! -x /usr/local/sbin/pd-linux-vxlan-digi-activate.sh ] && \
+     [ ! -x "$(dirname "$0")/pd-linux-vxlan-digi-activate.sh" ]; then
+    echo "pd-vpp-digi-vxlan-cutover: linux PPPoE mode needs pd-linux-vxlan-digi-activate.sh" >&2
+    exit 1
+  fi
+  echo "pd-vpp-digi-vxlan-cutover: VPP_PPPOE_MODE=linux — dispatching to Linux VXLAN activate"
+  if [ -x /usr/local/sbin/pd-linux-vxlan-digi-activate.sh ]; then
+    exec /usr/local/sbin/pd-linux-vxlan-digi-activate.sh
+  fi
+  exec "$(dirname "$0")/pd-linux-vxlan-digi-activate.sh"
+fi
 
 VPP="${VPP:-/usr/bin/vppctl}"
 PBR_TABLE="${PBR_TABLE:-81}"

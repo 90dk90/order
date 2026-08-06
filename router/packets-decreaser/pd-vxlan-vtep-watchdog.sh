@@ -4,9 +4,11 @@
 set -euo pipefail
 . /etc/pd/pd-vxlan-lab.conf 2>/dev/null || . "$(dirname "$0")/pd-vxlan-lab.conf"
 . /etc/default/pd-underlay 2>/dev/null || true
+. /etc/default/vpp-pppoe-mode 2>/dev/null || true
 
 [ "${PD_TRANSPORT:-vxlan}" = "vxlan" ] || exit 0
-[ "${PD_UNDERLAY:-}" = "digi-vxlan" ] || [ "${PD_PPPOE:-0}" = "1" ] || exit 0
+[ "${PD_UNDERLAY:-}" = "digi-vxlan" ] || [ "${PD_UNDERLAY:-}" = "digi-linux-vxlan" ] \
+  || [ "${PD_PPPOE:-0}" = "1" ] || exit 0
 
 VPP="${VPP:-/usr/bin/vppctl}"
 DST="${PD_VTEP:-2a0e:97c0:4c1::60}"
@@ -16,6 +18,28 @@ INST="${DIGI_VXLAN_INSTANCE:-${LAB_VXLAN_INSTANCE:-209}}"
 BD="${LAB_BD:-208}"
 LOOP="${LAB_LOOP:-loop208}"
 MTU="${VXLAN_MTU:-1400}"
+LINUX_IF="${DIGI_LINUX_VXLAN_IF:-vxlan-digi}"
+
+# Linux PPPoE: Digi GUA on ppp0 — keep Linux VXLAN SRC in sync
+if [ "${VPP_PPPOE_MODE:-}" = "linux" ] || [ "${PD_UNDERLAY:-}" = "digi-linux-vxlan" ]; then
+  SRC=""
+  [ -f /run/pd-digi-vtep.txt ] && SRC=$(tr -d ' \r\n' </run/pd-digi-vtep.txt)
+  if [ -z "$SRC" ]; then
+    SRC=$(ip -6 -o addr show dev ppp0 scope global 2>/dev/null | awk '
+      /2a01:4700:(807f|817f|80ff):ffff:/{
+        gsub(/\/.*/, "", $4); print $4; exit
+      }')
+  fi
+  [ -n "$SRC" ] || exit 0
+  CUR=""
+  if ip link show "$LINUX_IF" >/dev/null 2>&1; then
+    CUR=$(ip -d link show "$LINUX_IF" 2>/dev/null | sed -n 's/.* local \([^ ]*\).*/\1/p' | head -1)
+  fi
+  [ "$CUR" = "$SRC" ] && exit 0
+  echo "pd-vxlan-vtep-watchdog: linux VTEP drift ${CUR:-none} -> $SRC"
+  /usr/local/sbin/pd-linux-vxlan-digi-activate.sh || true
+  exit 0
+fi
 
 SRC=$($VPP show pppoe client detail 2>/dev/null | sed -n 's/.*wan-ipv6 observed \([^ /]*\).*/\1/p' | tr -d '\r' | head -1)
 SRC=${SRC%%/*}

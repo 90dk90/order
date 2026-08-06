@@ -52,10 +52,20 @@ else
   ip link set vpp-pppoe up 2>/dev/null || true
 fi
 
-# Ensure peer exists (credentials from /etc/default/vpp-pppoe-native or env)
-if [ ! -f /etc/ppp/peers/digi ]; then
-  echo "pd-digi-linux: missing /etc/ppp/peers/digi — install from debian-vpp/pppoe-peers-digi.example" >&2
+# Digi host uses peers/vpp-pppoe (historic); accept peers/digi too
+PEER=""
+if [ -f /etc/ppp/peers/vpp-pppoe ]; then
+  PEER=vpp-pppoe
+elif [ -f /etc/ppp/peers/digi ]; then
+  PEER=digi
+else
+  echo "pd-digi-linux: missing /etc/ppp/peers/vpp-pppoe (or digi)" >&2
   exit 1
+fi
+
+# Ensure unit dials the peer that exists
+if systemctl cat pppoe-vpp.service 2>/dev/null | grep -q 'call digi' && [ "$PEER" = "vpp-pppoe" ]; then
+  echo "pd-digi-linux: note unit may call digi — Digi peertype is vpp-pppoe" >&2
 fi
 
 systemctl unmask pppoe-vpp.service 2>/dev/null || true
@@ -94,6 +104,6 @@ ip -br addr show ppp0 2>/dev/null || {
 }
 ip -6 addr show ppp0 2>/dev/null | head -8 || true
 echo "pd-digi-linux: Digi PPPoE is Linux pppd/rp-pppoe (pppoe-vpp) — VPP native client off"
-echo "Next: re-arm VXLAN VTEP after Digi IPv6 settles:"
-echo "  /usr/local/sbin/pd-vpp-digi-vxlan-cutover.sh"
-echo "  DIGI_VTEP=<ipv6> /usr/local/sbin/pd-vpp-digi-vxlan-vps.sh"
+echo "Next: assign Digi GUA then re-arm Linux VXLAN underlay:"
+echo "  /usr/local/sbin/pd-digi-linux-wan6.sh"
+echo "  /usr/local/sbin/pd-vpp-digi-vxlan-cutover.sh   # → pd-linux-vxlan-digi-activate.sh"

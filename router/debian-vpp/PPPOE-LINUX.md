@@ -19,10 +19,15 @@ Digi ONT → x520wan (DPDK) → VPP BD20 → tap20 (vpp-pppoe)
                                          ↓
                                    pppd + rp-pppoe
                                          ↓
-                                       ppp0
+                                       ppp0  (Digi GUA)
                                          ↓
-                          VPP (VXLAN / PD) via existing softpath
+                              Linux VXLAN (vxlan-digi)
+                                         ↑
+                    VPP table 81 ── tap30/vpp6-host ──┘
 ```
+
+Digi GUA lives on Linux `ppp0`, so PD underlay is **Linux VXLAN** (same as VPS
+`vxlan-lab`), not VPP `vxlan_tunnel*`. VPP keeps LAN + PBR only.
 
 `x520wan` stays in VPP — **no** DPDK unbind, **never** af_packet on `enp36s0`.
 
@@ -37,15 +42,19 @@ install -m 0600 /etc/ppp/peers/digi   # from pppoe-peers-digi.example + real use
 systemctl daemon-reload
 install -m 0755 pd-digi-linux-pppoe.sh /usr/local/sbin/
 install -m 0755 pd-pppoe-enable-linux-once.sh /usr/local/sbin/
+install -m 0755 pd-linux-vxlan-digi-activate.sh /usr/local/sbin/
+install -m 0755 pd-digi-linux-wan6.sh /usr/local/sbin/
 
 PD_ALLOW_PPPOE_RESTART=1 /usr/local/sbin/pd-pppoe-enable-linux-once.sh
 ```
 
-Then re-arm VXLAN after Digi IPv6 is visible on `ppp0`:
+Then re-arm VXLAN after Digi IPv6 is on `ppp0` (`pd-digi-linux-wan6.sh`):
 
 ```bash
-/usr/local/sbin/pd-vpp-digi-vxlan-cutover.sh
-DIGI_VTEP=<ppp0-global-v6> /usr/local/sbin/pd-vpp-digi-vxlan-vps.sh
+/usr/local/sbin/pd-digi-linux-wan6.sh
+/usr/local/sbin/pd-vpp-digi-vxlan-cutover.sh   # dispatches to Linux VXLAN activate
+# VPS peer refresh is best-effort from Digi; or run manually:
+DIGI_VTEP=$(cat /run/pd-digi-vtep.txt) /usr/local/sbin/pd-vpp-digi-vxlan-vps.sh
 ```
 
 ## Rollback to VPP native
