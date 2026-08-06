@@ -85,8 +85,15 @@ iptables -C FORWARD -i gre-pd -j ACCEPT 2>/dev/null || iptables -I FORWARD -i gr
 iptables -C FORWARD -o gre-pd -j ACCEPT 2>/dev/null || iptables -I FORWARD -o gre-pd -j ACCEPT
 iptables -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
   iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
-iptables -t nat -C POSTROUTING -s 79.172.242.0/24 -o eth0 -j MASQUERADE 2>/dev/null || \
-  iptables -t nat -I POSTROUTING 1 -s 79.172.242.0/24 -o eth0 -j MASQUERADE
+# Default: real /24 BGP egress (no MASQUERADE). Opt-in: PD_MASQUERADE_24=1
+if [ "${PD_MASQUERADE_24:-0}" = "1" ]; then
+  iptables -t nat -C POSTROUTING -s 79.172.242.0/24 -o eth0 -j MASQUERADE 2>/dev/null || \
+    iptables -t nat -I POSTROUTING 1 -s 79.172.242.0/24 -o eth0 -j MASQUERADE
+else
+  while iptables -t nat -C POSTROUTING -s 79.172.242.0/24 -o eth0 -j MASQUERADE 2>/dev/null; do
+    iptables -t nat -D POSTROUTING -s 79.172.242.0/24 -o eth0 -j MASQUERADE || break
+  done
+fi
 
 if [ -x /usr/local/sbin/pd-gre-harden-vps.sh ]; then
   /usr/local/sbin/pd-gre-harden-vps.sh || true

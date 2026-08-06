@@ -1,0 +1,12 @@
+[Unit]
+Description=PD VPS: disable /24 MASQUERADE (real BGP egress)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pd-vps-no-masquerade-24.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
