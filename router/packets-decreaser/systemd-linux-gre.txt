@@ -1,0 +1,34 @@
+# Linux GRE watchdog (Proximus primary / Digi backup)
+[Unit]
+Description=Run PD Linux GRE watchdog every minute
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=60
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target
+---
+[Unit]
+Description=PD Linux GRE watchdog (Proximus/Digi underlay)
+After=vpp.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pd-gre-watchdog-linux.sh
+---
+# One-shot activate at boot (after Digi linux PPPoE if enabled)
+[Unit]
+Description=PD Linux GRE activate (Proximus primary)
+After=vpp.service pppoe-vpp.service network-online.target
+Wants=vpp.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/pd-linux-gre-activate.sh
+
+[Install]
+WantedBy=multi-user.target
