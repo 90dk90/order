@@ -79,7 +79,7 @@ if command -v taskset >/dev/null 2>&1; then
 fi
 
 # Host tap offloads (best-effort; many are fixed on virtio)
-for iface in vpp-pppoe vpp6-host; do
+for iface in digi-wan vpp-pppoe vpp6-host; do
   [ -d "/sys/class/net/$iface" ] || continue
   ethtool -K "$iface" gro on gso on sg on 2>/dev/null || true
 done
