@@ -23,16 +23,19 @@ Transit BGP for `79.172.242.0/24` runs on the **PD VPS**, not Digi Bird.
 ## Mode switch
 
 ```bash
-# Native (current)
+# Native VPP pppoeclient (current production default)
 echo 'VPP_PPPOE_MODE=native' | sudo tee /etc/default/vpp-pppoe-mode
 sudo systemctl disable --now pppoe-vpp vpp-stack-reconcile
 sudo systemctl enable --now vpp-pppoe-native
 sudo systemctl restart vpp
 
-# Rollback to Linux pppd
-sudo /usr/local/sbin/vpp-pppoe-rollback-linux.sh
+# Preferred soft multi-gig path: Linux pppd + rp-pppoe (see PPPOE-LINUX.md)
+PD_ALLOW_PPPOE_RESTART=1 /usr/local/sbin/pd-pppoe-enable-linux-once.sh
+# or older helper:
+# sudo /usr/local/sbin/vpp-pppoe-rollback-linux.sh
 ```
 
+For Digi multi-gig, prefer **Linux pppd** over native VPP client (RSS `0x8864` pins one VPP worker). Details: `PPPOE-LINUX.md`.
 ## Packages / plugin note
 
 - Official VPP `26.06-release` + `vpp-pppoeclient-plugins` (Hi-Jiajun **26.06-rc0**)

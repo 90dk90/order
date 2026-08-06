@@ -1,0 +1,23 @@
+[Unit]
+Description=Digi PPPoE via Linux pppd/rp-pppoe on vpp-pppoe TAP
+Documentation=file:///usr/local/share/doc/pd/PPPOE-LINUX.md
+After=vpp.service network-pre.target
+Wants=vpp.service
+ConditionPathExists=/etc/ppp/peers/digi
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/vpp-pppoe-mode
+EnvironmentFile=-/etc/default/digi-pppoe
+ExecStartPre=/bin/sh -c 'test "${VPP_PPPOE_MODE:-linux}" = "linux"'
+ExecStartPre=/bin/sh -c 'ip link show vpp-pppoe >/dev/null'
+ExecStartPre=/sbin/ip link set vpp-pppoe up
+# nodetach: Type=simple; kernel PPPoE via rp-pppoe plugin
+ExecStart=/usr/sbin/pppd nodetach call digi
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
