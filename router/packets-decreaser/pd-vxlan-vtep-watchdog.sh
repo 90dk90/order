@@ -21,7 +21,8 @@ MTU="${VXLAN_MTU:-1400}"
 LINUX_IF="${DIGI_LINUX_VXLAN_IF:-vxlan-digi}"
 
 # Linux PPPoE: Digi GUA on ppp0 — keep Linux VXLAN SRC in sync
-if [ "${VPP_PPPOE_MODE:-}" = "linux" ] || [ "${PD_UNDERLAY:-}" = "digi-linux-vxlan" ]; then
+if [ "${VPP_PPPOE_MODE:-}" = "linux" ] || [ "${VPP_PPPOE_MODE:-}" = "kernel" ] \
+  || [ "${PD_UNDERLAY:-}" = "digi-linux-vxlan" ]; then
   SRC=""
   [ -f /run/pd-digi-vtep.txt ] && SRC=$(tr -d ' \r\n' </run/pd-digi-vtep.txt)
   if [ -z "$SRC" ]; then

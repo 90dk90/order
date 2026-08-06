@@ -7,73 +7,68 @@ stable / widely deployed path. It is **not** Digi-10G hardware offload, but it b
 VPP `pppoeclient` for Digi multi-gig in practice because:
 
 - RX softirq can use **RPS** across host CPUs
-- No VPP worker-0 coupling with VXLAN/BGP on the same core
+- No VPP worker coupling with Digi WAN RX
 - Years of ISP FTTH production use
 
-NIC RSS on `0x8864` still collapses to one hardware queue — RPS is the mitigation.
+NIC RSS on `0x8864` still collapses toward one hardware queue — RPS is the mitigation.
 
-## Dataplane (Digi host)
+## Preferred dataplane on this host (`VPP_PPPOE_MODE=kernel`)
 
 ```
-Digi ONT → x520wan (DPDK) → VPP BD20 → tap20 (vpp-pppoe)
-                                         ↓
-                                   pppd + rp-pppoe
-                                         ↓
-                                       ppp0  (Digi GUA)
-                                         ↓
-                              Linux VXLAN (vxlan-digi)
-                                         ↑
-                    VPP table 81 ── tap30/vpp6-host ──┘
+Digi ONT → digi-wan (kernel ixgbe) → pppd/rp-pppoe → ppp0
+                                              ↓
+                                     Linux VXLAN (vxlan-digi)
+                                              ↑
+                       VPP LAN/PBR ── tap30/vpp6-host ──┘
 ```
 
-Digi GUA lives on Linux `ppp0`, so PD underlay is **Linux VXLAN** (same as VPS
-`vxlan-lab`), not VPP `vxlan_tunnel*`. VPP keeps LAN + PBR only.
+Digi WAN PCI `0000:2b:00.0` leaves DPDK. VPP keeps `x520lan` (+ extras).
+**Never** af_packet on `enp36s0`. PPPoE unit is **not** `BindsTo=vpp` (survives VPP restarts).
 
-`x520wan` stays in VPP — **no** DPDK unbind, **never** af_packet on `enp36s0`.
-
-## Cutover (one Digi flap)
+### Cutover (one Digi flap + one VPP restart)
 
 ```bash
-# On Digi, after installing units + peers:
-install -m 0644 pppoe-vpp.service /etc/systemd/system/
-install -m 0600 /etc/ppp/peers/digi   # from pppoe-peers-digi.example + real user
-# chap-secrets must contain Digi password
-
-systemctl daemon-reload
-install -m 0755 pd-digi-linux-pppoe.sh /usr/local/sbin/
-install -m 0755 pd-pppoe-enable-linux-once.sh /usr/local/sbin/
+install -m 0755 pd-pppoe-enable-kernel-once.sh /usr/local/sbin/
 install -m 0755 pd-linux-vxlan-digi-activate.sh /usr/local/sbin/
 install -m 0755 pd-digi-linux-wan6.sh /usr/local/sbin/
+# also refresh vpp-bootstrap.sh (MODE=kernel)
 
-PD_ALLOW_PPPOE_RESTART=1 /usr/local/sbin/pd-pppoe-enable-linux-once.sh
+PD_ALLOW_PPPOE_RESTART=1 PD_ALLOW_VPP_RESTART=1 \
+  /usr/local/sbin/pd-pppoe-enable-kernel-once.sh
 ```
 
-Then re-arm VXLAN after Digi IPv6 is on `ppp0` (`pd-digi-linux-wan6.sh`):
+## Alternate: softpath Linux PPPoE (no DPDK unbind)
+
+```
+Digi ONT → x520wan (DPDK) → VPP BD20 → tap20 → pppd → ppp0 → Linux VXLAN
+```
 
 ```bash
+PD_ALLOW_PPPOE_RESTART=1 /usr/local/sbin/pd-pppoe-enable-linux-once.sh
 /usr/local/sbin/pd-digi-linux-wan6.sh
-/usr/local/sbin/pd-vpp-digi-vxlan-cutover.sh   # dispatches to Linux VXLAN activate
-# VPS peer refresh is best-effort from Digi; or run manually:
-DIGI_VTEP=$(cat /run/pd-digi-vtep.txt) /usr/local/sbin/pd-vpp-digi-vxlan-vps.sh
+/usr/local/sbin/pd-vpp-digi-vxlan-cutover.sh
 ```
+
+More softpath loss under load (`vpp-pppoe` TX drops / `x520wan` rx-miss).
 
 ## Rollback to VPP native
 
 ```bash
 PD_ALLOW_PPPOE_RESTART=1 /usr/local/sbin/pd-pppoe-enable-once.sh
+# Kernel-WAN rollback also needs DPDK re-bind + VPP restart (not automated here).
 ```
 
 ## Verify
 
 ```bash
 systemctl status pppoe-vpp --no-pager
-ip -br addr show ppp0
-cat /sys/class/net/vpp-pppoe/queues/rx-0/rps_cpus   # expect non-zero mask
-journalctl -u pppoe-vpp -n 50 --no-pager
+ip -br addr show ppp0 digi-wan
+dpdk-devbind.py -s | head -20   # 2b:00.0 on ixgbe when MODE=kernel
+ping -c2 172.16.208.1
 ```
 
 ## Perf expectation
 
-- Better than VPP native soft-handoff for Digi WAN RX softpath
-- Digi **10G line-rate not guaranteed** (RSS PPPoE still HW-limited)
-- For true 10G prefer PPPoE off Digi (PPE / dedicated box) and keep Digi IP-only
+- Kernel WAN removes BD20/tap hairpin (main prior drop source)
+- Digi **10G line-rate still not guaranteed** (PPPoE ethertype RSS limits)
+- For true 10G: terminate PPPoE on a second box; Digi stays IP-only

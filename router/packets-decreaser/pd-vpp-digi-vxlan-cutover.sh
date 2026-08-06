@@ -12,7 +12,7 @@ set -euo pipefail
 
 # Linux pppd owns Digi GUA on ppp0 — VPP cannot source VXLAN from it.
 # Use Linux VXLAN + tap30 hairpin (symmetric with VPS classic VXLAN).
-if [ "${VPP_PPPOE_MODE:-}" = "linux" ]; then
+if [ "${VPP_PPPOE_MODE:-}" = "linux" ] || [ "${VPP_PPPOE_MODE:-}" = "kernel" ]; then
   if [ ! -x /usr/local/sbin/pd-linux-vxlan-digi-activate.sh ] && \
      [ ! -x "$(dirname "$0")/pd-linux-vxlan-digi-activate.sh" ]; then
     echo "pd-vpp-digi-vxlan-cutover: linux PPPoE mode needs pd-linux-vxlan-digi-activate.sh" >&2

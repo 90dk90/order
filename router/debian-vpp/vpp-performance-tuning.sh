@@ -40,7 +40,7 @@ done
 /sbin/sysctl -w vm.dirty_ratio=10 >/dev/null 2>&1 || true
 /sbin/sysctl -w vm.dirty_background_ratio=3 >/dev/null 2>&1 || true
 
-for iface in ppp0 vpp-pppoe vpp6-host vpp-gre-fw vpp-mgmt; do
+for iface in ppp0 digi-wan vpp-pppoe vpp6-host vpp-gre-fw vpp-mgmt; do
   [ -d "/sys/class/net/$iface" ] || continue
   for rps in /sys/class/net/"$iface"/queues/rx-*/rps_cpus; do
     [ -e "$rps" ] || continue
