@@ -1,48 +1,30 @@
 #!/bin/bash
-# Digi sticky outbound — VPP-native (no ABF, no Linux L3).
+# Digi sticky outbound — hairpin taps + classify (additive; no LAN FIB deletes).
+# Opt-in: PD_ENABLE_STICKY=1 OR --force
 #
-# ABANDONED by default (2026-08): PD GRE is the primary egress again.
-# Opt-in only: PD_ENABLE_STICKY=1 pd-gre-activate.sh  OR  run this script manually.
-# WHY NOT ABF: abf_plugin.so SIGSEGV on BVI loop10 under traffic (VPP 26.06).
+# loop10 classify:
+#   TCP service sports → fib 81 (PD VXLAN /24)
+#   other TCP          → fib 82 → tap80 ──L2── tap81/table83 → NAT → digi
+#   UDP/ICMP           → fib 81 (PD)
 #
-if [ "${PD_ENABLE_STICKY:-0}" != 1 ] && [ "${1:-}" != "--force" ]; then
-  echo "digi-sticky-outbound: disabled (PD-only egress). Pass --force or PD_ENABLE_STICKY=1 to run." >&2
-  exit 0
-fi
-#
-# Design (mode=vpp-classify):
-#   GW 79.172.242.1/32 on loop10 BVI / table 81 (default → gre0 / dedicated IP)
-#   ip4-inacl classify on loop10:
-#     TCP src_port ∈ SERVICE_PORTS → fib 81 (inbound service replies → GRE)
-#     other TCP                   → fib 82 → tap80 ──L2 wire── tap81/table83
-#                                   → NAT44 → digi (max BW)
-#     UDP/ICMP/miss               → fib 81 → gre0
-#
-# LAN FIB (anti-ARP-storm): NEVER install "79.172.242.0/24 via loop10" (glean).
-# Connected /24 on the BVI makes VPP ARP for every scanned host in the /24 and
-# floods the LAN → GW ping jitter. Instead:
-#   table 81: known hosts as /32 + static neigh; cover /24 via drop
-#   tables 0/82/83: /24 via ip4-lookup-in-table 81
-#
-# Stickiness: all client TCP (ephemeral sport) stays on Digi; service sports
-# stay on GRE so public inbound (SSH/HTTPS/…) keeps the dedicated IP.
-#
-# Linux only L2-bridges tap80↔tap81 (no IP, no iptables, no .1).
+# NEVER delete LAN routes / change loop10 IP table / del loop10 addresses
+# (those SIGSEGV VPP 26.06).
 set -euo pipefail
 
-VPP_BIN="${VPP_BIN:-/usr/bin/vppctl}"
-VPP_SOCK="${VPP_SOCK:-/run/vpp/cli.sock}"
-vpp() {
-  # Strip CR from vppctl; never fail the script on pipe/close races
-  "$VPP_BIN" -s "$VPP_SOCK" "$@" 2>&1 | tr -d '\r' || true
-}
+if [ "${PD_ENABLE_STICKY:-0}" != 1 ] && [ "${1:-}" != "--force" ]; then
+  echo "digi-sticky-outbound: disabled. Pass --force or PD_ENABLE_STICKY=1." >&2
+  exit 0
+fi
 
-LAN_BD="${LAN_BD:-10}"
-LAN_GW="${LAN_GW:-79.172.242.1}"
-LAN_PREFIX="${LAN_PREFIX:-79.172.242.0/24}"
-# Known LAN hosts (ip or ip:mac). Default MAC = PVE vmbr/bond on AS219084.
-LAN_HOSTS="${LAN_HOSTS:-79.172.242.2:c4:62:37:0d:2f:96 79.172.242.3:c4:62:37:0d:2f:96 79.172.242.10:c4:62:37:0d:2f:96}"
-GRE_TABLE="${GRE_TABLE:-81}"
+VPP="${VPP_BIN:-/usr/bin/vppctl}"
+SOCK="${VPP_SOCK:-/run/vpp/cli.sock}"
+vc() { "$VPP" -s "$SOCK" "$@" 2>/dev/null || true; }
+vo() { "$VPP" -s "$SOCK" "$@" 2>/dev/null | tr -d '\r' || true; }
+
+# shellcheck disable=SC1091
+[ -r /etc/default/pd-underlay ] && . /etc/default/pd-underlay
+
+PD_TABLE="${PD_TABLE:-81}"
 HAIRPIN_TABLE="${HAIRPIN_TABLE:-82}"
 DIGI_TABLE="${DIGI_TABLE:-83}"
 TAP_A_ID="${TAP_A_ID:-80}"
@@ -52,178 +34,57 @@ TAP_B_HOST="${TAP_B_HOST:-vpp-sticky-b}"
 WIRE_BR="${WIRE_BR:-sticky-wire}"
 HAIRPIN_A="10.254.90.1"
 HAIRPIN_B="10.254.90.2"
-# Inbound service source ports that must stay on GRE/dedicated IP
-SERVICE_PORTS="${SERVICE_PORTS:-22 80 443 8006 25565 51820 7777 27015 3389 8080 8443}"
+DIGI_IF="${DIGI_IF:-digi}"
+
+SERVICE_PORTS_BASE="${SERVICE_PORTS_BASE:-22 80 443 2022 3306 8006 8080 8443 9090 9108 3389 51820 7777 25565 19132 27015 27016 30110 30120 40120 9987}"
+SERVICE_PORT_RANGES="${SERVICE_PORT_RANGES:-25500-25800 30000-30150}"
+
 PPPOE_PEER="${PPPOE_PEER:-}"
+[ -z "$PPPOE_PEER" ] && PPPOE_PEER=$(vo show pppoe client detail \
+  | sed -n 's/.*ipv4 local [0-9.]* peer \([0-9.]*\).*/\1/p' | head -1)
+: "${PPPOE_PEER:?pppoe peer missing}"
 
-# Install LAN reachability without connected-/24 glean (ARP storm killer).
-install_lan_fib() {
-  local t h mac entry ip
-  # Drop any prior glean / connected cover for the /24
-  for t in 0 "$GRE_TABLE" "$HAIRPIN_TABLE" "$DIGI_TABLE"; do
-    vpp ip route del table "$t" "$LAN_PREFIX" via loop10 >/dev/null || true
-    vpp ip route del table "$t" "$LAN_PREFIX" >/dev/null || true
-  done
-  vpp ip route del "$LAN_PREFIX" via loop10 >/dev/null || true
-  vpp ip route del "$LAN_PREFIX" >/dev/null || true
+DIGI_IP=$(vo show interface address "$DIGI_IF" \
+  | awk '/L3 [0-9]+\./{gsub(/\/.*/,"",$2); print $2; exit}')
+: "${DIGI_IP:?digi IPv4 missing}"
 
-  for entry in $LAN_HOSTS; do
-    ip="${entry%%:*}"
-    mac=""
-    case "$entry" in
-      *:*) mac="${entry#*:}" ;;
-    esac
-    [ -n "$mac" ] && vpp set ip neighbor loop10 "$ip" "$mac" static >/dev/null || true
-    vpp ip route del table "$GRE_TABLE" "${ip}/32" >/dev/null || true
-    vpp ip route add table "$GRE_TABLE" "${ip}/32" via "$ip" loop10 >/dev/null || true
-    for t in 0 "$HAIRPIN_TABLE" "$DIGI_TABLE"; do
-      vpp ip route del table "$t" "${ip}/32" >/dev/null || true
-      vpp ip route add table "$t" "${ip}/32" via ip4-lookup-in-table "$GRE_TABLE" >/dev/null || true
-    done
-  done
+alive() { vo show version | grep -q vpp; }
+alive || { echo "digi-sticky: vpp down" >&2; exit 1; }
 
-  # Cover: unknown hosts in the announced /24 → drop (no ARP)
-  vpp ip route add table "$GRE_TABLE" "$LAN_PREFIX" via drop >/dev/null || true
-  for t in 0 "$HAIRPIN_TABLE" "$DIGI_TABLE"; do
-    vpp ip route add table "$t" "$LAN_PREFIX" via ip4-lookup-in-table "$GRE_TABLE" >/dev/null || true
-  done
-  vpp ip route del table 0 "${LAN_GW}/32" >/dev/null || true
-  vpp ip route add table 0 "${LAN_GW}/32" via ip4-lookup-in-table "$GRE_TABLE" >/dev/null || true
-}
+# Detach prior classify only
+old_sport=$(sed -n 's/^sport_table=//p' /etc/pd/sticky-digi 2>/dev/null | head -1 || true)
+if [ -n "${old_sport:-}" ]; then
+  vc set interface input acl intfc loop10 ip4-table "$old_sport" del
+fi
+vc set interface input acl intfc loop10 ip4-table 0 del
 
-LEGACY_STICKY=vpp-sticky
-LEGACY_OUT=vpp-digi-out
-LEGACY_GRE=vpp-gre-out
+# Strip prior NAT on loop10 (broken BVI order)
+vc set interface nat44 ei in loop10 out "$DIGI_IF" output-feature del
+vc set interface nat44 ei in loop10 out "$DIGI_IF" del
 
+# --- hairpin taps (small rings) ---
 ensure_tap() {
-  local id="$1" host="$2" rxq="$3" txq="$4" rings="$5"
-  local i
-  if ! vpp show interface | grep -q "tap${id}"; then
-    vpp create tap id "$id" host-if-name "$host" host-mtu-size 1500 \
-      num-rx-queues "$rxq" num-tx-queues "$txq" rx-ring-size "$rings" tx-ring-size "$rings" >/dev/null
+  local id="$1" host="$2"
+  if ! vo show interface | grep -q "tap${id}"; then
+    vc create tap id "$id" host-if-name "$host" host-mtu-size 1500 \
+      num-rx-queues 2 num-tx-queues 2 rx-ring-size 1024 tx-ring-size 1024
   fi
-  # Host netdev can lag VPP create; wait before bridging
+  local i
   for i in $(seq 1 50); do
     ip link show "$host" &>/dev/null && return 0
     sleep 0.1
   done
-  echo "digi-sticky: host tap $host missing after create" >&2
+  echo "digi-sticky: host tap $host missing" >&2
   return 1
 }
 
-ensure_loop10() {
-  if ! vpp show interface | grep -q '^loop10'; then
-    vpp create loopback interface instance 10 >/dev/null
-  fi
-  vpp set interface state loop10 up >/dev/null
-  vpp set interface l2 bridge loop10 "$LAN_BD" bvi >/dev/null || true
-  for iface in x520lan x520extra0 x520extra1; do
-    vpp set interface l2 bridge "$iface" "$LAN_BD" >/dev/null || true
-    vpp set interface state "$iface" up >/dev/null || true
-  done
-}
+ensure_tap "$TAP_A_ID" "$TAP_A_HOST"
+ensure_tap "$TAP_B_ID" "$TAP_B_HOST"
+alive || { echo "digi-sticky: vpp died after tap create" >&2; exit 1; }
 
-nat44_ei() {
-  # VPP 26.06: "set interface nat44 ei in X out Y [del]"
-  local in_if="$1" out_if="$2" op="${3:-add}"
-  if [ "$op" = del ]; then
-    vpp set interface nat44 ei in "$in_if" out "$out_if" del >/dev/null || true
-  else
-    vpp set interface nat44 ei in "$in_if" out "$out_if" del >/dev/null || true
-    vpp set interface nat44 ei in "$in_if" out "$out_if" >/dev/null
-  fi
-}
+vc set interface state "tap${TAP_A_ID}" up
+vc set interface state "tap${TAP_B_ID}" up
 
-strip_linux_l3() {
-  iptables -t mangle -D PREROUTING -i "$LEGACY_STICKY" -j DIGI_STICKY 2>/dev/null || true
-  iptables -t mangle -F DIGI_STICKY 2>/dev/null || true
-  iptables -t mangle -X DIGI_STICKY 2>/dev/null || true
-  ip rule del fwmark 42 table 82 2>/dev/null || true
-  ip rule del iif "$LEGACY_STICKY" table 81 2>/dev/null || true
-  ip route flush table 82 2>/dev/null || true
-  ip route flush table 81 2>/dev/null || true
-  iptables -t nat -D POSTROUTING -o "$LEGACY_OUT" -j MASQUERADE 2>/dev/null || true
-  if command -v nft >/dev/null 2>&1; then
-    nft delete rule ip nat POSTROUTING oifname "$LEGACY_OUT" masquerade 2>/dev/null || true
-  fi
-  for pair in \
-    "-i $LEGACY_STICKY -o $LEGACY_OUT" \
-    "-i $LEGACY_OUT -o $LEGACY_STICKY" \
-    "-i $LEGACY_STICKY -o $LEGACY_GRE" \
-    "-i $LEGACY_GRE -o $LEGACY_STICKY"; do
-    # shellcheck disable=SC2086
-    iptables -D FORWARD $pair -j ACCEPT 2>/dev/null || true
-  done
-  for ifc in "$LEGACY_STICKY" "$LEGACY_OUT" "$LEGACY_GRE"; do
-    ip addr flush dev "$ifc" 2>/dev/null || true
-  done
-  nat44_ei tap71 digi del
-  vpp set interface ip address del tap70 all >/dev/null || true
-  ip addr flush dev "$LEGACY_STICKY" 2>/dev/null || true
-}
-
-strip_abf() {
-  # Never use ABF on this box — detach leftovers only
-  vpp abf attach ip4 policy 42 del loop10 >/dev/null || true
-  vpp abf attach ip4 policy 42 del tap70 >/dev/null || true
-  vpp abf policy del id 42 via "$HAIRPIN_B" tap${TAP_A_ID} >/dev/null || true
-  vpp abf policy del id 42 via 10.254.90.2 tap80 >/dev/null || true
-}
-
-strip_classify() {
-  # Detach inacl only — do NOT bulk-delete classify tables 0..N (VPP 26.06 SIGSEGV).
-  local old_sport old_proto
-  old_sport=$(sed -n 's/^sport_table=//p' /etc/pd/sticky-digi 2>/dev/null | head -1 || true)
-  old_proto=$(sed -n 's/^proto_table=//p' /etc/pd/sticky-digi 2>/dev/null | head -1 || true)
-  if [ -n "${old_sport:-}" ]; then
-    vpp set interface input acl intfc loop10 ip4-table "$old_sport" del >/dev/null || true
-  fi
-  vpp set interface input acl intfc loop10 ip4-table 0 del >/dev/null || true
-  # Delete only previously recorded tables (safe); leave others alone
-  if [ -n "${old_sport:-}" ]; then
-    vpp classify table table "$old_sport" del >/dev/null || true
-  fi
-  if [ -n "${old_proto:-}" ] && [ "${old_proto}" != "${old_sport:-}" ]; then
-    vpp classify table table "$old_proto" del >/dev/null || true
-  fi
-}
-
-if [ -z "$PPPOE_PEER" ]; then
-  PPPOE_PEER=$(vpp show pppoe client detail \
-    | sed -n 's/.*ipv4 local [0-9.]* peer \([0-9.]*\).*/\1/p' | head -1)
-fi
-: "${PPPOE_PEER:?pppoe peer missing — start vpp-pppoe-native first}"
-
-if ! vpp show version >/dev/null; then
-  echo "digi-sticky: vpp cli not ready" >&2
-  exit 1
-fi
-
-strip_linux_l3
-strip_abf
-strip_classify
-
-vpp create bridge-domain "$LAN_BD" >/dev/null || true
-ensure_loop10
-
-# --- GW on VPP BVI / GRE default (/32 — never /24 connected glean) ---
-vpp set interface ip address del loop10 all >/dev/null || true
-vpp ip table add "$GRE_TABLE" >/dev/null || true
-vpp ip table add "$HAIRPIN_TABLE" >/dev/null || true
-vpp ip table add "$DIGI_TABLE" >/dev/null || true
-vpp set interface ip table loop10 "$GRE_TABLE" >/dev/null || true
-vpp set interface ip address loop10 "${LAN_GW}/32" >/dev/null
-vpp set interface state loop10 up >/dev/null
-vpp ip route del table "$GRE_TABLE" 0.0.0.0/0 >/dev/null || true
-vpp ip route add table "$GRE_TABLE" 0.0.0.0/0 via 172.16.207.1 gre0 >/dev/null
-install_lan_fib
-
-# --- Hairpin wire (L2 only on Linux) ---
-# Smaller rings: 4096 paired with 4 queues has SIGSEGV'd VPP 26.06 on this box under recreate.
-ensure_tap "$TAP_A_ID" "$TAP_A_HOST" 2 2 1024
-ensure_tap "$TAP_B_ID" "$TAP_B_HOST" 2 2 1024
-vpp set interface state tap${TAP_A_ID} up >/dev/null
-vpp set interface state tap${TAP_B_ID} up >/dev/null
 if ! ip link show "$WIRE_BR" &>/dev/null; then
   ip link add "$WIRE_BR" type bridge
 fi
@@ -237,106 +98,105 @@ ip link set "$TAP_B_HOST" master "$WIRE_BR"
 ip link set "$WIRE_BR" up
 ip link set "$TAP_A_HOST" up
 ip link set "$TAP_B_HOST" up
-sysctl -q -w net.ipv6.conf."$WIRE_BR".disable_ipv6=1 2>/dev/null || true
-sysctl -q -w net.ipv6.conf."$TAP_A_HOST".disable_ipv6=1 2>/dev/null || true
-sysctl -q -w net.ipv6.conf."$TAP_B_HOST".disable_ipv6=1 2>/dev/null || true
+sysctl -q -w "net.ipv6.conf.${WIRE_BR}.disable_ipv6=1" 2>/dev/null || true
+sysctl -q -w "net.ipv6.conf.${TAP_A_HOST}.disable_ipv6=1" 2>/dev/null || true
+sysctl -q -w "net.ipv6.conf.${TAP_B_HOST}.disable_ipv6=1" 2>/dev/null || true
 
-vpp set interface ip address del tap${TAP_A_ID} all >/dev/null || true
-vpp set interface ip address tap${TAP_A_ID} "${HAIRPIN_A}/30" >/dev/null
+vc ip table add "$HAIRPIN_TABLE"
+vc ip table add "$DIGI_TABLE"
 
-# table 82: classify target → hairpin out tap80
-vpp ip table add "$HAIRPIN_TABLE" >/dev/null || true
-vpp ip route del table "$HAIRPIN_TABLE" 0.0.0.0/0 >/dev/null || true
-vpp ip route add table "$HAIRPIN_TABLE" 0.0.0.0/0 via "$HAIRPIN_B" tap${TAP_A_ID} >/dev/null
-# LAN return path is installed by install_lan_fib (deag → table 81, no glean)
+vc set interface ip address del "tap${TAP_A_ID}" all
+vc set interface ip address "tap${TAP_A_ID}" "${HAIRPIN_A}/30"
 
-# table 83: tap81 → NAT → digi
-vpp ip table add "$DIGI_TABLE" >/dev/null || true
-vpp set interface ip address del tap${TAP_B_ID} all >/dev/null || true
-vpp set interface ip table tap${TAP_B_ID} "$DIGI_TABLE" >/dev/null || true
-vpp set interface ip address tap${TAP_B_ID} "${HAIRPIN_B}/30" >/dev/null
+# table 82 → hairpin out
+vc ip route add table "$HAIRPIN_TABLE" 0.0.0.0/0 via "$HAIRPIN_B" "tap${TAP_A_ID}"
+# return to LAN via existing table 81 (additive — do not del)
+vc ip route add table "$HAIRPIN_TABLE" 79.172.242.0/24 via ip4-lookup-in-table "$PD_TABLE"
+vc ip route add table "$HAIRPIN_TABLE" 79.172.242.2/32 via ip4-lookup-in-table "$PD_TABLE"
 
-MAC_A=$(vpp show hardware-interfaces tap${TAP_A_ID} | awk '/Ethernet address/{print $3; exit}')
-MAC_B=$(vpp show hardware-interfaces tap${TAP_B_ID} | awk '/Ethernet address/{print $3; exit}')
-: "${MAC_A:?tap${TAP_A_ID} mac missing}"
-: "${MAC_B:?tap${TAP_B_ID} mac missing}"
-vpp set ip neighbor tap${TAP_A_ID} "$HAIRPIN_B" "$MAC_B" static >/dev/null
-vpp set ip neighbor tap${TAP_B_ID} "$HAIRPIN_A" "$MAC_A" static >/dev/null
+vc set interface ip address del "tap${TAP_B_ID}" all
+vc set interface ip table "tap${TAP_B_ID}" "$DIGI_TABLE"
+vc set interface ip address "tap${TAP_B_ID}" "${HAIRPIN_B}/30"
 
-vpp ip route del table "$DIGI_TABLE" 0.0.0.0/0 >/dev/null || true
-vpp ip route add table "$DIGI_TABLE" 0.0.0.0/0 via "$PPPOE_PEER" digi >/dev/null
-# LAN return path is installed by install_lan_fib (deag → table 81, no glean)
+MAC_A=$(vo show hardware-interfaces "tap${TAP_A_ID}" | awk '/Ethernet address/{print $3; exit}')
+MAC_B=$(vo show hardware-interfaces "tap${TAP_B_ID}" | awk '/Ethernet address/{print $3; exit}')
+: "${MAC_A:?tapA mac}"; : "${MAC_B:?tapB mac}"
+vc set ip neighbor "tap${TAP_A_ID}" "$HAIRPIN_B" "$MAC_B" static
+vc set ip neighbor "tap${TAP_B_ID}" "$HAIRPIN_A" "$MAC_A" static
 
-vpp nat44 ei plugin enable sessions 131072 users 4096 inside-vrf "$DIGI_TABLE" outside-vrf 0 >/dev/null \
-  || vpp nat44 ei plugin enable >/dev/null || true
-DIGI_IP=$(vpp show interface address digi | awk '/L3 [0-9]+\./{gsub(/\/.*/,"",$2); print $2; exit}')
-[ -n "${DIGI_IP:-}" ] && vpp nat44 ei add address "$DIGI_IP" >/dev/null || true
-nat44_ei "tap${TAP_B_ID}" digi add
-vpp nat44 ei forwarding disable >/dev/null || true
-vpp nat44 ei mss-clamping 1452 >/dev/null || true
+vc ip route add table "$DIGI_TABLE" 0.0.0.0/0 via "$PPPOE_PEER" "$DIGI_IF"
+vc ip route add table "$DIGI_TABLE" 79.172.242.0/24 via ip4-lookup-in-table "$PD_TABLE"
+vc ip route add table "$DIGI_TABLE" 79.172.242.2/32 via ip4-lookup-in-table "$PD_TABLE"
 
-# --- classify chain: sport table → proto table ---
-# Match buffers MUST include skip_n_vectors padding (16B per skip).
-vpp classify table mask l3 ip4 proto buckets 64 memory-size 2M >/dev/null
-PROTO_IDX=$(vpp show classify tables | awk '/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+/{print $1; exit}')
-: "${PROTO_IDX:?proto classify table missing}"
+# NAT on tap81 → digi (not on loop10 BVI)
+vc nat44 ei plugin enable sessions 131072 users 4096 inside-vrf "$DIGI_TABLE" outside-vrf 0
+vc nat44 ei plugin enable
+vc nat44 ei add address "$DIGI_IP"
+vc set interface nat44 ei in "tap${TAP_B_ID}" out "$DIGI_IF" del
+vc set interface nat44 ei in "tap${TAP_B_ID}" out "$DIGI_IF"
+vc nat44 ei mss-clamping 1452
 
-vpp classify table mask l3 ip4 proto l4 src_port buckets 128 memory-size 4M next-table "$PROTO_IDX" >/dev/null
-SPORT_IDX=$(vpp show classify tables | awk '
+alive || { echo "digi-sticky: vpp died after NAT" >&2; exit 1; }
+
+# ping hairpin
+vc ping "$HAIRPIN_B" repeat 1
+
+# classify
+vc classify table mask l3 ip4 proto buckets 64 memory-size 2M
+PROTO_IDX=$(vo show classify tables | awk '/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+/{print $1; exit}')
+: "${PROTO_IDX:?proto idx}"
+
+vc classify table mask l3 ip4 proto l4 src_port buckets 256 memory-size 8M next-table "$PROTO_IDX"
+SPORT_IDX=$(vo show classify tables | awk '
   /^[[:space:]]*[0-9]+[[:space:]]+[0-9]+/{idx=$1}
   /ffff000000000000000000000000$/{print idx; exit}
 ')
-: "${SPORT_IDX:?sport classify table missing}"
+: "${SPORT_IDX:?sport idx}"
 
-# proto 6 → fib 82 (skip1 pad + match1)
 PROTO_MATCH="0000000000000000000000000000000000000000000000060000000000000000"
-vpp classify session table-index "$PROTO_IDX" match hex "$PROTO_MATCH" action set-ip4-fib-id "$HAIRPIN_TABLE" >/dev/null
+vc classify session table-index "$PROTO_IDX" match hex "$PROTO_MATCH" \
+  action set-ip4-fib-id "$HAIRPIN_TABLE"
+
+SERVICE_PORTS="$SERVICE_PORTS_BASE"
+for p in $SERVICE_PORT_RANGES; do
+  a="${p%-*}"; b="${p#*-}"
+  while [ "$a" -le "$b" ]; do
+    SERVICE_PORTS="$SERVICE_PORTS $a"
+    a=$((a + 1))
+  done
+done
 
 pad="00000000000000000000000000000000"
 m1="00000000000000060000000000000000"
 for port in $SERVICE_PORTS; do
   hp=$(printf '%04x' "$port")
   match="${pad}${m1}0000${hp}000000000000000000000000"
-  vpp classify session table-index "$SPORT_IDX" match hex "$match" action set-ip4-fib-id "$GRE_TABLE" >/dev/null
+  vc classify session table-index "$SPORT_IDX" match hex "$match" \
+    action set-ip4-fib-id "$PD_TABLE"
 done
 
-vpp set interface input acl intfc loop10 ip4-table "$SPORT_IDX" >/dev/null
+vc set interface input acl intfc loop10 ip4-table "$SPORT_IDX"
 
-# Re-assert LAN FIB after classify attach (activate/watchdog must not leave glean)
-install_lan_fib
+alive || { echo "digi-sticky: vpp died after classify" >&2; exit 1; }
 
-# Merge any Linux-visible neigh (host not on DPDK LAN; usually empty)
-while read -r ip mac; do
-  case "$ip" in
-    79.172.242.*)
-      [ "$ip" = "$LAN_GW" ] && continue
-      [ "$ip" = "79.172.242.254" ] && continue
-      [ -n "$mac" ] && [ "$mac" != "FAILED" ] && [ "$mac" != "INCOMPLETE" ] && \
-        vpp set ip neighbor loop10 "$ip" "$mac" static >/dev/null || true
-      ;;
-  esac
-done < <(ip neigh show 2>/dev/null | awk '/79\.172\.242\./ && /lladdr/{print $1,$5}')
+if ! vo show interface features loop10 | grep -q ip4-inacl; then
+  echo "digi-sticky: ip4-inacl missing" >&2
+  exit 1
+fi
+if ! vo show interface features "tap${TAP_B_ID}" | grep -q nat44-ei-in2out; then
+  echo "digi-sticky: NAT missing on tap${TAP_B_ID}" >&2
+  exit 1
+fi
 
-# Keep /32 only — never re-add /24 (connected glean = ARP storm)
-vpp set interface ip address del loop10 "${LAN_GW}/24" >/dev/null || true
-vpp set interface ip address del loop10 "${LAN_GW}/32" >/dev/null || true
-vpp set interface ip address loop10 "${LAN_GW}/32" >/dev/null
-install_lan_fib
+# Confirm PD default untouched
+if ! vo show ip fib table "$PD_TABLE" | grep -q loop208; then
+  echo "digi-sticky: WARN table ${PD_TABLE} default not via loop208" >&2
+fi
 
 mkdir -p /etc/pd
-printf 'enabled=1\nmode=vpp-classify\nproto_table=%s\nsport_table=%s\nlan_gw=%s/32\n' \
-  "$PROTO_IDX" "$SPORT_IDX" "$LAN_GW" > /etc/pd/sticky-digi
+nports=$(echo "$SERVICE_PORTS" | wc -w)
+printf 'enabled=1\nmode=vpp-classify-hairpin\nproto_table=%s\nsport_table=%s\npd_table=%s\nhairpin_table=%s\ndigi_table=%s\ndigi_ip=%s\nports=%s\n' \
+  "$PROTO_IDX" "$SPORT_IDX" "$PD_TABLE" "$HAIRPIN_TABLE" "$DIGI_TABLE" "$DIGI_IP" "$nports" \
+  > /etc/pd/sticky-digi
 
-# Sanity
-vpp show version >/dev/null
-vpp ping "$HAIRPIN_B" repeat 1 >/dev/null
-if ! vpp show interface features loop10 | grep -q ip4-inacl; then
-  echo "digi-sticky: ip4-inacl not on loop10" >&2
-  exit 1
-fi
-if ! vpp show interface features "tap${TAP_B_ID}" | grep -q nat44-ei-in2out; then
-  echo "digi-sticky: NAT44 missing on tap${TAP_B_ID}" >&2
-  exit 1
-fi
-
-echo "digi-sticky-outbound: VPP-classify GW ${LAN_GW}/32 (no /24 glean); TCP→fib${HAIRPIN_TABLE}→NAT→digi/${PPPOE_PEER}; service-sports+UDP/ICMP→GRE; tables sport=${SPORT_IDX} proto=${PROTO_IDX}"
+echo "digi-sticky-outbound: OK hairpin; Digi SNAT ${DIGI_IP} via tap${TAP_B_ID}; ${nports} TCP sports→PD; UDP→PD; peer=${PPPOE_PEER}"

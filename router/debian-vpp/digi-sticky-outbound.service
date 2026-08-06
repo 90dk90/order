@@ -1,14 +1,16 @@
 [Unit]
-Description=Digi sticky outbound (DISABLED — PD GRE is primary egress)
+Description=Digi sticky outbound (TCP bulk via Digi SNAT; PD /24 inbound)
 After=vpp.service vpp-pppoe-native.service
 Wants=vpp.service vpp-pppoe-native.service
-# Abandoned: Digi sticky (vpp-classify/tap) caused VPP SIGSEGV and LAN ARP storms.
-# All traffic uses PD GRE via pd-gre-activate.sh. Re-enable only with PD_ENABLE_STICKY=1.
+# Opt-in: enable with systemctl enable --now after setting PD_ENABLE_STICKY=1
+# or run: PD_ENABLE_STICKY=1 /usr/local/sbin/digi-sticky-outbound.sh --force
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/true
+Environment=PD_ENABLE_STICKY=1
+ExecStart=/usr/local/sbin/digi-sticky-outbound.sh --force
+ExecStop=/usr/local/sbin/digi-sticky-disable.sh
 
 [Install]
 WantedBy=multi-user.target
