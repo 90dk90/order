@@ -96,7 +96,7 @@ ip link set "$GRE_IF" up
 ip addr replace "${GRE_HOST}/30" dev "$GRE_IF"
 
 # Seed ARP for known LAN hosts (glean alone is slow / lossy right after apply)
-for seed in 79.172.242.2 79.172.242.3 79.172.242.10; do
+for seed in 79.172.242.2 79.172.242.3 79.172.242.10 79.172.242.48; do
   ping -c 1 -W 1 "$seed" >/dev/null 2>&1 || true
 done
 while read -r ip mac; do

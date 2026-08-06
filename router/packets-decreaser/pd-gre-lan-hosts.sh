@@ -6,7 +6,7 @@ set -euo pipefail
 ENV=/etc/pd-gre.env
 [ -f "$ENV" ] && . "$ENV"
 PEER="${INNER_PEER:-172.16.207.2}"
-HOSTS="${PD_LAN_HOSTS:-79.172.242.1 79.172.242.2 79.172.242.3 79.172.242.10}"
+HOSTS="${PD_LAN_HOSTS:-79.172.242.1 79.172.242.2 79.172.242.3 79.172.242.10 79.172.242.48}"
 
 ip route replace blackhole 79.172.242.0/24
 for h in $HOSTS; do

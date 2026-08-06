@@ -7,7 +7,7 @@ set -euo pipefail
 
 GRE_IF="${GRE_IF:-gre-pd}"
 GRE_PEER="${INNER_PEER:-172.16.207.2}"
-HOSTS="${HAIRPIN_HOSTS:-79.172.242.1 79.172.242.2 79.172.242.3 79.172.242.10}"
+HOSTS="${HAIRPIN_HOSTS:-79.172.242.1 79.172.242.2 79.172.242.3 79.172.242.10 79.172.242.48}"
 
 if ! ip link show "$GRE_IF" &>/dev/null; then
   echo "missing $GRE_IF — GRE not up yet" >&2

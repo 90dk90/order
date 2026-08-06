@@ -7,7 +7,7 @@ set -euo pipefail
 
 VXLAN_IF="${HAIRPIN_VXLAN_IF:-vxlan-lab}"
 DIGI_INNER="${LAB_DIGI:-172.16.208.2}"
-HOSTS="${HAIRPIN_HOSTS:-79.172.242.1 79.172.242.2 79.172.242.3 79.172.242.10}"
+HOSTS="${HAIRPIN_HOSTS:-79.172.242.1 79.172.242.2 79.172.242.3 79.172.242.10 79.172.242.48}"
 
 if ! ip link show "$VXLAN_IF" &>/dev/null; then
   echo "missing $VXLAN_IF — run pd-vxlan-lab-vps.sh first" >&2
