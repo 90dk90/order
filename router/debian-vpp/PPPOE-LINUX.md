@@ -51,11 +51,21 @@ PD_ALLOW_PPPOE_RESTART=1 /usr/local/sbin/pd-pppoe-enable-linux-once.sh
 
 More softpath loss under load (`vpp-pppoe` TX drops / `x520wan` rx-miss).
 
-## Rollback to VPP native
+## Rollback to VPP native (ONE VPP restart)
+
+Requires a prior Digi backup under `/root/pd-backup-kernel-mode-*.tgz` (see `packets-decreaser/backups/README.md`).
+
+```bash
+install -m 0755 pd-pppoe-enable-native-once.sh /usr/local/sbin/
+PD_ALLOW_PPPOE_RESTART=1 PD_ALLOW_VPP_RESTART=1   /usr/local/sbin/pd-pppoe-enable-native-once.sh
+```
+
+This re-binds Digi WAN into DPDK, starts `vpp-pppoe-native`, runs VPP VXLAN cutover, and syncs the VPS VTEP. Soft-handoff must already be loaded.
+
+Legacy (PPPoE only, no DPDK re-bind):
 
 ```bash
 PD_ALLOW_PPPOE_RESTART=1 /usr/local/sbin/pd-pppoe-enable-once.sh
-# Kernel-WAN rollback also needs DPDK re-bind + VPP restart (not automated here).
 ```
 
 ## Verify
