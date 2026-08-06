@@ -74,8 +74,13 @@ if [ -r /etc/default/vpp-pppoe-mode ]; then
   MODE="${VPP_PPPOE_MODE:-linux}"
 fi
 
-LAN_EXTRAS="0000:2b:00.1 0000:01:00.0 0000:01:00.1"
+# LAN only — never bind unused 0000:01:00.x (down fibre) into DPDK.
+LAN_EXTRAS="0000:2b:00.1"
+EXTRAS_UNUSED="0000:01:00.0 0000:01:00.1"
 WAN="0000:2b:00.0"
+
+# Always keep unused fibre extras out of DPDK
+/usr/bin/dpdk-devbind.py -u $EXTRAS_UNUSED >/dev/null 2>&1 || true
 
 if [ "$MODE" = "kernel" ]; then
   /usr/bin/dpdk-devbind.py -u $LAN_EXTRAS >/dev/null 2>&1 || true

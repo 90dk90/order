@@ -103,4 +103,17 @@ for iface in digi-wan vpp-pppoe vpp6-host; do
   ethtool -K "$iface" gro on gso on sg on 2>/dev/null || true
 done
 
+# VPP workers are SCHED_FIFO busy-pollers on isolcpus 2-5. Default RT throttle
+# (950ms/1000ms) periodically stops them → Digi x520lan replies flush on a ~1s
+# boundary (measured: hundreds of ms ICMP/ARP spikes Digi↔PVE; wire tcpdump
+# showed all slow replies aligned to the same fractional second).
+/sbin/sysctl -w kernel.sched_rt_runtime_us=-1 >/dev/null 2>&1 || true
+
+# Keep non-VPP IRQs off isolcpus (especially digi-wan MSIX after kernel WAN).
+for irq in /proc/irq/[0-9]*; do
+  [ -f "$irq/smp_affinity" ] || continue
+  echo "$LINUX_CPUS_HEX" > "$irq/smp_affinity" 2>/dev/null || true
+done
+echo "$LINUX_CPUS_HEX" > /proc/irq/default_smp_affinity 2>/dev/null || true
+
 exit 0
