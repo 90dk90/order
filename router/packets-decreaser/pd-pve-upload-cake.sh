@@ -15,7 +15,7 @@ DIGI_UP_MBIT="${DIGI_UP_MBIT:-2800}"
 IFACE="${IFACE:-enp16s0}"
 
 if [ "$PD_SHAPE" = 0 ]; then
-  # restore fq-under-mq from pve-nic-tune if present
+  # restore mq+pfifo from pve-nic-tune if present
   if [ -x /usr/local/sbin/pve-nic-tune.sh ]; then
     /usr/local/sbin/pve-nic-tune.sh || true
   else

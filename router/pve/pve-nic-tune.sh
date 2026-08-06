@@ -8,11 +8,16 @@ ip link set vmbr0 txqueuelen 20000 2>/dev/null || true
 echo 0 > /sys/class/net/vmbr0/bridge/multicast_snooping 2>/dev/null || true
 for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$g" 2>/dev/null; done
 
-# BBR pacing: fq under mq, not fq_codel
+# Digi underlay latency: classic fq pacing under mq caused ~400-700ms ICMP
+# spikes to GW/LAN (same class of bug as Digi ppp0). Use pfifo_fast instead.
+# Must delete root first — replace parent alone leaves stale fq children.
+tc qdisc del dev "$IF" root 2>/dev/null || true
 tc qdisc replace dev "$IF" root handle 1: mq 2>/dev/null || true
-for i in $(seq 1 16); do
-  tc qdisc replace dev "$IF" parent 1:$(printf '%x' $i) handle $((100+i)): fq 2>/dev/null || \
-  tc qdisc replace dev "$IF" parent 1:$i handle $((100+i)): fq 2>/dev/null || true
+nqueues=$(ls -d /sys/class/net/"$IF"/queues/tx-* 2>/dev/null | wc -l)
+[ "$nqueues" -gt 0 ] || nqueues=16
+for i in $(seq 1 "$nqueues"); do
+  tc qdisc replace dev "$IF" parent 1:$(printf '%x' "$i") pfifo_fast 2>/dev/null || \
+  tc qdisc replace dev "$IF" parent 1:$i pfifo_fast 2>/dev/null || true
 done
 
 sysctl -w net.core.rps_sock_flow_entries=32768 >/dev/null 2>&1 || true
