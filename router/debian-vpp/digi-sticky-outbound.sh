@@ -2,10 +2,12 @@
 # Digi sticky outbound — hairpin taps + classify (additive; no LAN FIB deletes).
 # Opt-in: PD_ENABLE_STICKY=1 OR --force
 #
-# loop10 classify:
-#   TCP service sports → fib 81 (PD VXLAN /24)
-#   other TCP          → fib 82 → tap80 ──L2── tap81/table83 → NAT → digi
-#   UDP/ICMP           → fib 81 (PD)
+# loop10 classify (INVERTED — no service-port whitelist):
+#   TCP src_port >= 32768 (ephemeral, bit 0x8000) → fib 82 → hairpin → NAT → digi
+#   everything else (any TCP service port, UDP, ICMP) → fib 81 PD / VXLAN
+#
+# So any listen port on 79.172.242.x keeps dedicated-IP replies; only client
+# outbound (Linux ip_local_port_range 32768-60999) uses Digi CGNAT.
 #
 # NEVER delete LAN routes / change loop10 IP table / del loop10 addresses
 # (those SIGSEGV VPP 26.06).
@@ -36,9 +38,6 @@ HAIRPIN_A="10.254.90.1"
 HAIRPIN_B="10.254.90.2"
 DIGI_IF="${DIGI_IF:-digi}"
 
-SERVICE_PORTS_BASE="${SERVICE_PORTS_BASE:-22 80 443 2022 3306 8006 8080 8443 9090 9108 3389 51820 7777 25565 19132 27015 27016 30110 30120 40120 9987}"
-SERVICE_PORT_RANGES="${SERVICE_PORT_RANGES:-25500-25800 30000-30150}"
-
 PPPOE_PEER="${PPPOE_PEER:-}"
 [ -z "$PPPOE_PEER" ] && PPPOE_PEER=$(vo show pppoe client detail \
   | sed -n 's/.*ipv4 local [0-9.]* peer \([0-9.]*\).*/\1/p' | head -1)
@@ -51,7 +50,12 @@ DIGI_IP=$(vo show interface address "$DIGI_IF" \
 alive() { vo show version | grep -q vpp; }
 alive || { echo "digi-sticky: vpp down" >&2; exit 1; }
 
-# Detach prior classify only
+classify_indices() {
+  # Numeric table ids only (not the "TableIdx" header).
+  vo show classify tables | awk '/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+/{print $1}'
+}
+
+# Detach prior classify only (never bulk-delete classify tables)
 old_sport=$(sed -n 's/^sport_table=//p' /etc/pd/sticky-digi 2>/dev/null | head -1 || true)
 if [ -n "${old_sport:-}" ]; then
   vc set interface input acl intfc loop10 ip4-table "$old_sport" del
@@ -141,39 +145,25 @@ alive || { echo "digi-sticky: vpp died after NAT" >&2; exit 1; }
 # ping hairpin
 vc ping "$HAIRPIN_B" repeat 1
 
-# classify
-vc classify table mask l3 ip4 proto buckets 64 memory-size 2M
-PROTO_IDX=$(vo show classify tables | awk '/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+/{print $1; exit}')
-: "${PROTO_IDX:?proto idx}"
-
-vc classify table mask l3 ip4 proto l4 src_port buckets 256 memory-size 8M next-table "$PROTO_IDX"
-SPORT_IDX=$(vo show classify tables | awk '
-  /^[[:space:]]*[0-9]+[[:space:]]+[0-9]+/{idx=$1}
-  /ffff000000000000000000000000$/{print idx; exit}
-')
-: "${SPORT_IDX:?sport idx}"
-
-PROTO_MATCH="0000000000000000000000000000000000000000000000060000000000000000"
-vc classify session table-index "$PROTO_IDX" match hex "$PROTO_MATCH" \
-  action set-ip4-fib-id "$HAIRPIN_TABLE"
-
-SERVICE_PORTS="$SERVICE_PORTS_BASE"
-for p in $SERVICE_PORT_RANGES; do
-  a="${p%-*}"; b="${p#*-}"
-  while [ "$a" -le "$b" ]; do
-    SERVICE_PORTS="$SERVICE_PORTS $a"
-    a=$((a + 1))
-  done
+# --- classify: TCP ephemeral (sport bit 0x8000) → Digi; miss → PD ---
+# Arg order matters: mask … buckets … skip … match … (skip after mask).
+before_idx=$(classify_indices | tr '\n' ' ')
+MASK_EPH="00000000000000ff000000000000000000008000000000000000000000000000"
+vc classify table mask hex "$MASK_EPH" buckets 64 skip 1 match 2 memory-size 2M
+SPORT_IDX=""
+for idx in $(classify_indices); do
+  case " $before_idx " in
+    *" $idx "*) ;;
+    *) SPORT_IDX=$idx; break ;;
+  esac
 done
+: "${SPORT_IDX:?ephemeral classify table missing}"
 
 pad="00000000000000000000000000000000"
-m1="00000000000000060000000000000000"
-for port in $SERVICE_PORTS; do
-  hp=$(printf '%04x' "$port")
-  match="${pad}${m1}0000${hp}000000000000000000000000"
-  vc classify session table-index "$SPORT_IDX" match hex "$match" \
-    action set-ip4-fib-id "$PD_TABLE"
-done
+m1="00000000000000060000000000000000"   # TCP
+m2="00008000000000000000000000000000"   # sport & 0x8000
+vc classify session table-index "$SPORT_IDX" match hex "${pad}${m1}${m2}" \
+  action set-ip4-fib-id "$HAIRPIN_TABLE"
 
 vc set interface input acl intfc loop10 ip4-table "$SPORT_IDX"
 
@@ -194,9 +184,8 @@ if ! vo show ip fib table "$PD_TABLE" | grep -q loop208; then
 fi
 
 mkdir -p /etc/pd
-nports=$(echo "$SERVICE_PORTS" | wc -w)
-printf 'enabled=1\nmode=vpp-classify-hairpin\nproto_table=%s\nsport_table=%s\npd_table=%s\nhairpin_table=%s\ndigi_table=%s\ndigi_ip=%s\nports=%s\n' \
-  "$PROTO_IDX" "$SPORT_IDX" "$PD_TABLE" "$HAIRPIN_TABLE" "$DIGI_TABLE" "$DIGI_IP" "$nports" \
+printf 'enabled=1\nmode=vpp-classify-ephemeral\nsport_table=%s\npd_table=%s\nhairpin_table=%s\ndigi_table=%s\ndigi_ip=%s\nrule=tcp_sport_ge_32768_to_digi\n' \
+  "$SPORT_IDX" "$PD_TABLE" "$HAIRPIN_TABLE" "$DIGI_TABLE" "$DIGI_IP" \
   > /etc/pd/sticky-digi
 
-echo "digi-sticky-outbound: OK hairpin; Digi SNAT ${DIGI_IP} via tap${TAP_B_ID}; ${nports} TCP sports→PD; UDP→PD; peer=${PPPOE_PEER}"
+echo "digi-sticky-outbound: OK ephemeral→Digi SNAT ${DIGI_IP}; TCP sport<32768 + UDP →PD; table=${SPORT_IDX} peer=${PPPOE_PEER}"

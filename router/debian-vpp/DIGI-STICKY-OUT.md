@@ -5,14 +5,18 @@
 - **Outbound bulk TCP** (apt, speedtest, curl): Digi CGNAT SNAT — low latency / high BW
 - **Inbound + game UDP + service TCP replies**: PD `/24` via VXLAN — players keep `79.172.242.x`
 
-## Design (`mode=vpp-classify-hairpin`)
+## Design (`mode=vpp-classify-ephemeral`)
 
 ```
 loop10 classify
-  TCP sport ∈ SERVICE_PORTS → fib 81 → loop208 VXLAN (PD)
-  other TCP                 → fib 82 → tap80 ──L2 sticky-wire── tap81/table83 → NAT44 → digi
-  UDP/ICMP                  → fib 81 (PD)
+  TCP src_port >= 32768 (Linux ephemeral, bit 0x8000)
+      → fib 82 → tap80 ──L2 sticky-wire── tap81/table83 → NAT44 → digi
+  miss (any TCP service port 1–32767, UDP, ICMP)
+      → fib 81 → loop208 VXLAN (PD / dedicated IP)
 ```
+
+No service-port whitelist: any listen port on `79.172.242.x` keeps PD replies.
+Only client outbound (curl/apt/speedtest) uses Digi CGNAT.
 
 NAT must **not** sit on BVI `loop10` (feature order runs NAT before classify → broken / dangerous).
 Hairpin taps keep NAT on `tap81` after fib redirect.
