@@ -55,7 +55,23 @@ for iface in ppp0 digi-wan vpp-pppoe vpp6-host vpp-gre-fw vpp-mgmt; do
     echo "$LINUX_CPUS_HEX" > "$xps" 2>/dev/null || true
   done
   /sbin/ip link set "$iface" txqueuelen 20000 2>/dev/null || true
-  /sbin/tc qdisc replace dev "$iface" root fq 2>/dev/null || true
+  # FQ pacing on Digi underlay (ppp0/digi-wan/vpp6-host) causes ~400-700ms
+  # spikes on sparse ICMP/VXLAN flows. Use pfifo_fast there; keep fq elsewhere.
+  case "$iface" in
+    ppp0|digi-wan|vpp6-host|vxlan-digi|vpp-pppoe)
+      if [ "$iface" = "digi-wan" ]; then
+        /sbin/tc qdisc replace dev "$iface" root handle 1: mq 2>/dev/null || true
+        for i in 1 2 3 4 5 6; do
+          /sbin/tc qdisc replace dev "$iface" parent 1:$i pfifo_fast 2>/dev/null || true
+        done
+      else
+        /sbin/tc qdisc replace dev "$iface" root pfifo_fast 2>/dev/null || true
+      fi
+      ;;
+    *)
+      /sbin/tc qdisc replace dev "$iface" root fq 2>/dev/null || true
+      ;;
+  esac
   /sbin/sysctl -w "net.ipv4.conf.$iface.rp_filter=0" >/dev/null 2>&1 || true
 done
 
