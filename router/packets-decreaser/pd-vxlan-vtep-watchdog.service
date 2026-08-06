@@ -1,0 +1,10 @@
+[Unit]
+Description=PD VXLAN Digi VTEP watchdog (no PPPoE/VPP restart)
+After=vpp.service pd-vpp-prox-vxlan.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pd-vxlan-vtep-watchdog.sh
+
+[Install]
+WantedBy=multi-user.target
