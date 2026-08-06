@@ -122,6 +122,9 @@ systemctl disable pppoe-vpp.service 2>/dev/null || true
 systemctl mask pppoe-vpp.service 2>/dev/null || true
 ip link del vxlan-digi 2>/dev/null || true
 ip link set digi-wan down 2>/dev/null || true
+# PD must keep public 79.172.242.0/24 — never Digi CGNAT SNAT on loop10
+rm -f /run/vpp-prefer-digi-snat
+/usr/local/sbin/vpp-cleanup-fallbacks.sh 2>/dev/null || true
 # keep RT fix
 sysctl -w kernel.sched_rt_runtime_us=-1 >/dev/null 2>&1 || true
 
@@ -142,6 +145,13 @@ systemctl reset-failed vpp-pppoe-native.service 2>/dev/null || true
 systemctl unmask vpp-pppoe-native.service 2>/dev/null || true
 systemctl enable vpp-pppoe-native.service
 systemctl restart vpp-pppoe-native.service
+
+# Re-assert PD-only egress (native.sh may re-arm SNAT if stale flag existed)
+rm -f /run/vpp-prefer-digi-snat
+vppctl set interface nat44 in loop10 out digi del 2>/dev/null || true
+vppctl set interface nat44 in x520lan out digi del 2>/dev/null || true
+vppctl clear nat44 ed sessions 2>/dev/null || true
+vppctl nat44 plugin disable 2>/dev/null || true
 
 # --- wait Digi IPv4 + GUA ---
 SRC=""
