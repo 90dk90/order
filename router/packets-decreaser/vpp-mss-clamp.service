@@ -1,0 +1,14 @@
+[Unit]
+Description=Clamp IPv4 TCP MSS in VPP for PD VXLAN path
+Requires=vpp.service
+After=vpp.service vpp-bootstrap.service pd-vpp-prox-vxlan.service
+Wants=pd-vpp-prox-vxlan.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vpp-mss-clamp.sh
+RemainAfterExit=yes
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target

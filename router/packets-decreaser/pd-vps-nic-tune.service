@@ -1,0 +1,12 @@
+[Unit]
+Description=PD VPS NIC softpath tune (pfifo_fast, backlog, RPS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pd-vps-nic-tune.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

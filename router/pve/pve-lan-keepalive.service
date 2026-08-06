@@ -1,0 +1,18 @@
+[Unit]
+Description=Keep Digi VPP LAN path warm (idle ICMP spike mitigation)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PVE_LAN_KEEPALIVE_TARGET=79.172.242.1
+Environment=PVE_LAN_KEEPALIVE_INTERVAL=0.02
+ExecStart=/usr/local/sbin/pve-lan-keepalive.sh
+Restart=always
+RestartSec=2
+Nice=5
+# Avoid fighting measurement pings on loss of focus; low traffic (~50pps).
+CPUQuota=5%
+
+[Install]
+WantedBy=multi-user.target
