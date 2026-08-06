@@ -40,7 +40,8 @@ done
 /sbin/sysctl -w vm.dirty_ratio=10 >/dev/null 2>&1 || true
 /sbin/sysctl -w vm.dirty_background_ratio=3 >/dev/null 2>&1 || true
 
-for iface in ppp0 digi-wan vpp-pppoe vpp6-host vpp-gre-fw vpp-mgmt; do
+# Include vxlan-digi: PD underlay RX used to keep RPS=0 (not in this list).
+for iface in ppp0 digi-wan vpp-pppoe vpp6-host vxlan-digi vpp-gre-fw vpp-mgmt; do
   [ -d "/sys/class/net/$iface" ] || continue
   for rps in /sys/class/net/"$iface"/queues/rx-*/rps_cpus; do
     [ -e "$rps" ] || continue
@@ -63,6 +64,8 @@ for iface in ppp0 digi-wan vpp-pppoe vpp6-host vpp-gre-fw vpp-mgmt; do
         # Kernel WAN: pause frames on Digi fibre NIC must stay off (same class of
         # quantized delay as PVE enp16s0).
         ethtool -A digi-wan autoneg off rx off tx off 2>/dev/null || true
+        # Default ixgbe rings (512) under-buffer multi-gig PPPoE+VXLAN; max is 4096.
+        ethtool -G digi-wan rx 4096 tx 4096 2>/dev/null || true
         /sbin/tc qdisc replace dev "$iface" root handle 1: mq 2>/dev/null || true
         for i in 1 2 3 4 5 6; do
           /sbin/tc qdisc replace dev "$iface" parent 1:$i pfifo_fast 2>/dev/null || true
@@ -77,6 +80,12 @@ for iface in ppp0 digi-wan vpp-pppoe vpp6-host vpp-gre-fw vpp-mgmt; do
   esac
   /sbin/sysctl -w "net.ipv4.conf.$iface.rp_filter=0" >/dev/null 2>&1 || true
 done
+
+# VXLAN inner GRO helps multi-flow PD decap on the Linux softpath (no PPPoE flap).
+if [ -d /sys/class/net/vxlan-digi ]; then
+  ethtool -K vxlan-digi gro on gso on sg on rx-udp-gro-forwarding on 2>/dev/null || \
+    ethtool -K vxlan-digi gro on gso on sg on 2>/dev/null || true
+fi
 
 # Keep virtio/tap IRQs on Linux CPUs only
 for irq in $(awk -F: '/virtio/ {gsub(/ /,"",$1); print $1}' /proc/interrupts 2>/dev/null); do

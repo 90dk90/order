@@ -72,3 +72,10 @@ ping -c2 172.16.208.1
 - Kernel WAN removes BD20/tap hairpin (main prior drop source)
 - Digi **10G line-rate still not guaranteed** (PPPoE ethertype RSS limits)
 - For true 10G: terminate PPPoE on a second box; Digi stays IP-only
+- PVE-via-PD softpath ceiling is typically well below Digi-native `ppp0`
+  (VPP → `tap30` → Linux VXLAN → `ppp0`) and below VPS native (~5G). Softpath
+  knobs that do **not** flap PPPoE:
+  - Digi: `/usr/local/sbin/vpp-performance-tuning.sh` (`vxlan-digi` RPS,
+    `digi-wan` rings 4096, `pfifo_fast`)
+  - VPS: `/usr/local/sbin/pd-vps-nic-tune.sh` (`eth0` mq+`pfifo_fast`, backlog,
+    RPS) + `pd-vps-nic-tune.service`
