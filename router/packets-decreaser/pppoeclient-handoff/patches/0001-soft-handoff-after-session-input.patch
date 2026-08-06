@@ -1,0 +1,566 @@
+# Soft-handoff Option B vs Hi-Jiajun 492cdefcbc88ba6367353d40afcc92553807becd
+# Tree under pppoeclient-handoff/pppoeclient/ is authoritative.
+
+diff -ruN '--exclude=CMakeLists.txt' '--exclude=UPSTREAM_COMMIT' handoff-diff/upstream/dhcp6_runtime_shims.h handoff-diff/pd/dhcp6_runtime_shims.h
+--- handoff-diff/upstream/dhcp6_runtime_shims.h	1970-01-01 00:00:00.000000000 +0000
++++ handoff-diff/pd/dhcp6_runtime_shims.h	2026-08-05 21:05:45.423307197 +0000
+@@ -0,0 +1,75 @@
++/* SPDX-License-Identifier: Apache-2.0
++ * Digi FDio 26.06-release dhcp headers lack Hi-Jiajun DHCPv6 runtime
++ * snapshot types used by pppoeclient detail/API. Define them locally so
++ * the plugin builds against stock Digi vpp-dev. At runtime the code still
++ * resolves symbols via vlib_get_plugin_symbol and no-ops when Digi's
++ * dhcp_plugin.so does not export the getters.
++ *
++ * Struct layouts match Hi-Jiajun/vpp feat/pr-pppoeclient.
++ */
++#ifndef included_pppoeclient_dhcp6_runtime_shims_h
++#define included_pppoeclient_dhcp6_runtime_shims_h
++
++#include <vnet/ip/ip6_packet.h>
++
++#ifndef DHCP6_MAX_LEARNED_DNS_SERVERS
++#define DHCP6_MAX_LEARNED_DNS_SERVERS 2
++#endif
++
++#ifndef DHCP6_IA_NA_CLIENT_RUNTIME_T_DEFINED
++#define DHCP6_IA_NA_CLIENT_RUNTIME_T_DEFINED
++typedef struct
++{
++  u8 enabled;
++  u8 rebinding;
++  u32 server_index;
++  u32 T1;
++  u32 T2;
++  u32 address_count;
++  u32 t1_remaining;
++  u32 t2_remaining;
++  u8 first_address_present;
++  ip6_address_t first_address;
++  u32 first_address_preferred_lt;
++  u32 first_address_valid_lt;
++  u8 dns_server_count;
++  ip6_address_t dns_servers[DHCP6_MAX_LEARNED_DNS_SERVERS];
++} dhcp6_ia_na_client_runtime_t;
++#endif
++
++#ifndef DHCP6_PD_CLIENT_RUNTIME_T_DEFINED
++#define DHCP6_PD_CLIENT_RUNTIME_T_DEFINED
++typedef struct
++{
++  u8 enabled;
++  u8 rebinding;
++  u32 server_index;
++  u32 T1;
++  u32 T2;
++  u32 prefix_count;
++  u32 t1_remaining;
++  u32 t2_remaining;
++  char prefix_group[65];
++} dhcp6_pd_client_runtime_t;
++
++typedef struct
++{
++  u8 present;
++  ip6_address_t prefix;
++  u8 prefix_length;
++  u32 preferred_lt;
++  u32 valid_lt;
++  u32 valid_remaining;
++} dhcp6_pd_active_prefix_runtime_t;
++
++typedef struct
++{
++  u8 present;
++  u32 consumer_count;
++  u32 sw_if_index;
++  ip6_address_t address;
++  u8 prefix_length;
++} dhcp6_pd_consumer_runtime_t;
++#endif
++
++#endif /* included_pppoeclient_dhcp6_runtime_shims_h */
+diff -ruN '--exclude=CMakeLists.txt' '--exclude=UPSTREAM_COMMIT' handoff-diff/upstream/node.c handoff-diff/pd/node.c
+--- handoff-diff/upstream/node.c	2026-08-05 20:54:48.104995855 +0000
++++ handoff-diff/pd/node.c	2026-08-05 21:02:44.419775842 +0000
+@@ -6,10 +6,15 @@
+  */
+ 
+ #include <vlib/vlib.h>
++#include <vlib/threads.h>
++#include <vlib/buffer_node.h>
++#include <vppinfra/xxhash.h>
+ 
+ #include <ppp/packet.h>
+ 
+ #include <vnet/tcp/tcp_packet.h>
++#include <vnet/ip/ip4_packet.h>
++#include <vnet/ip/ip6_packet.h>
+ #include <pppoeclient/pppox/pppox.h>
+ #include <pppoeclient/pppoeclient.h>
+ 
+@@ -539,106 +544,174 @@
+     }
+ }
+ 
+-static uword
+-
+-pppoeclient_session_input (vlib_main_t *vm,
+-
+-			   vlib_node_runtime_t *node,
+-
+-			   vlib_frame_t *from_frame)
+-
++/* Hash inner IP after PPPoE unwrap for soft worker handoff.
++ * Prefer 5-tuple (addrs + L4 ports) for TCP/UDP so Digi VXLAN IPv6/UDP
++ * flows spread; fall back to addrs+proto. current_data points at IP. */
++static_always_inline u32
++pppoeclient_session_flow_hash (vlib_buffer_t *b, u32 is_ip6)
+ {
++  u8 *data = vlib_buffer_get_current (b);
++  u64 h = 0;
+ 
+-  pppoeclient_main_t *pem = &pppoeclient_main;
+-
+-  u32 n_left_from, next_index, *from, *to_next;
+-
+-  u32 session_pkts = from_frame->n_vectors;
+-
+-  from = vlib_frame_vector_args (from_frame);
+-
+-  n_left_from = from_frame->n_vectors;
+-
+-  next_index = node->cached_next_index;
+-
+-  while (n_left_from > 0)
+-
++  if (is_ip6)
+     {
+-
+-      u32 n_left_to_next;
+-
+-      vlib_get_next_frame (vm, node, next_index,
+-
+-			   to_next, n_left_to_next);
+-
+-      while (n_left_from >= 4 && n_left_to_next >= 2)
++      ip6_header_t *ip6 = (ip6_header_t *) data;
++      u8 proto;
++      u16 l4_offset;
++
++      if (PREDICT_FALSE (b->current_length < sizeof (*ip6)))
++	return 1;
++
++      h = ip6->src_address.as_u64[0] ^ ip6->src_address.as_u64[1] ^
++	  ip6->dst_address.as_u64[0] ^ ip6->dst_address.as_u64[1];
++      proto = ip6->protocol;
++      l4_offset = sizeof (*ip6);
++      /* Single common ext-hdr hop — Digi VXLAN is typically bare IPv6+UDP. */
++      if ((proto == IP_PROTOCOL_IP6_HOP_BY_HOP_OPTIONS ||
++	   proto == IP_PROTOCOL_IPV6_ROUTE ||
++	   proto == IP_PROTOCOL_IP6_DESTINATION_OPTIONS ||
++	   proto == IP_PROTOCOL_IPV6_FRAGMENTATION) &&
++	  b->current_length >= l4_offset + 8)
+ 	{
+-	  u32 bi0, bi1;
+-	  vlib_buffer_t *b0, *b1;
+-	  pppoeclient_session_input_result_t r0, r1;
+-
+-	  /* Prefetch next iteration. */
+-	  {
+-	    vlib_buffer_t *p2, *p3;
+-	    p2 = vlib_get_buffer (vm, from[2]);
+-	    p3 = vlib_get_buffer (vm, from[3]);
+-	    vlib_prefetch_buffer_header (p2, LOAD);
+-	    vlib_prefetch_buffer_header (p3, LOAD);
+-	    CLIB_PREFETCH (p2->data, 2 * CLIB_CACHE_LINE_BYTES, LOAD);
+-	    CLIB_PREFETCH (p3->data, 2 * CLIB_CACHE_LINE_BYTES, LOAD);
+-	  }
+-
+-	  bi0 = from[0];
+-	  bi1 = from[1];
+-	  to_next[0] = bi0;
+-	  to_next[1] = bi1;
+-	  from += 2;
+-	  to_next += 2;
+-	  n_left_to_next -= 2;
+-	  n_left_from -= 2;
+-
+-	  b0 = vlib_get_buffer (vm, bi0);
+-	  b1 = vlib_get_buffer (vm, bi1);
++	  ip6_ext_header_t *ext = (ip6_ext_header_t *) (data + l4_offset);
++	  proto = ext->next_hdr;
++	  l4_offset += ip6_ext_header_len (ext);
++	}
++      h ^= proto;
++      if ((proto == IP_PROTOCOL_UDP || proto == IP_PROTOCOL_TCP) &&
++	  b->current_length >= l4_offset + 4)
++	h ^= clib_mem_unaligned (data + l4_offset, u32);
++    }
++  else
++    {
++      ip4_header_t *ip4 = (ip4_header_t *) data;
++      u32 ip_hdr_len;
+ 
+-	  pppoeclient_session_input_one (vm, pem, b0, &r0);
+-	  pppoeclient_session_input_one (vm, pem, b1, &r1);
++      if (PREDICT_FALSE (b->current_length < sizeof (*ip4)))
++	return 1;
+ 
+-	  pppoeclient_session_input_trace (vm, node, b0, &r0);
+-	  pppoeclient_session_input_trace (vm, node, b1, &r1);
++      h = ((u64) ip4->src_address.as_u32 << 32) | ip4->dst_address.as_u32;
++      h ^= ip4->protocol;
++      ip_hdr_len = ip4_header_bytes (ip4);
++      if ((ip4->protocol == IP_PROTOCOL_UDP || ip4->protocol == IP_PROTOCOL_TCP) &&
++	  b->current_length >= ip_hdr_len + 4)
++	h ^= clib_mem_unaligned (data + ip_hdr_len, u32);
++    }
+ 
+-	  vlib_validate_buffer_enqueue_x2 (vm, node, next_index, to_next, n_left_to_next, bi0, bi1,
+-					   r0.next, r1.next);
+-	}
++  h = clib_xxhash (h);
++  return (u32) h | 1;
++}
+ 
+-      while (n_left_from > 0 && n_left_to_next > 0)
+-	{
+-	  u32 bi0;
+-	  vlib_buffer_t *b0;
+-	  pppoeclient_session_input_result_t r0;
++static_always_inline u16
++pppoeclient_soft_handoff_thread (pppoeclient_main_t *pem, u32 hash)
++{
++  u32 n = pem->soft_handoff_n_workers;
++  u32 worker;
+ 
+-	  bi0 = from[0];
+-	  to_next[0] = bi0;
+-	  from += 1;
+-	  to_next += 1;
+-	  n_left_from -= 1;
+-	  n_left_to_next -= 1;
++  if (PREDICT_TRUE (is_pow2 (n)))
++    worker = hash & (n - 1);
++  else
++    worker = hash % n;
++  return (u16) vlib_get_worker_thread_index (worker);
++}
+ 
+-	  b0 = vlib_get_buffer (vm, bi0);
+-	  pppoeclient_session_input_one (vm, pem, b0, &r0);
+-	  pppoeclient_session_input_trace (vm, node, b0, &r0);
++static_always_inline void
++pppoeclient_session_handoff_flush (vlib_main_t *vm, vlib_node_runtime_t *node,
++				   pppoeclient_main_t *pem, u32 *bi4, u16 *ti4, u32 n4, u32 *bi6,
++				   u16 *ti6, u32 n6)
++{
++  u32 n_enq;
++
++  if (n4)
++    {
++      n_enq = vlib_buffer_enqueue_to_thread (vm, node, pem->fq_ip4_index, bi4, ti4, n4,
++					     1 /* drop on congestion */);
++      vlib_node_increment_counter (vm, node->node_index, PPPOECLIENT_ERROR_HANDOFF_IP4, n_enq);
++      if (PREDICT_FALSE (n_enq < n4))
++	vlib_node_increment_counter (vm, node->node_index,
++				     PPPOECLIENT_ERROR_HANDOFF_CONGESTION_DROP, n4 - n_enq);
++    }
++  if (n6)
++    {
++      n_enq = vlib_buffer_enqueue_to_thread (vm, node, pem->fq_ip6_index, bi6, ti6, n6,
++					     1 /* drop on congestion */);
++      vlib_node_increment_counter (vm, node->node_index, PPPOECLIENT_ERROR_HANDOFF_IP6, n_enq);
++      if (PREDICT_FALSE (n_enq < n6))
++	vlib_node_increment_counter (vm, node->node_index,
++				     PPPOECLIENT_ERROR_HANDOFF_CONGESTION_DROP, n6 - n_enq);
++    }
++}
+ 
+-	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index, to_next, n_left_to_next, bi0,
+-					   r0.next);
++static uword
++pppoeclient_session_input (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *from_frame)
++{
++  pppoeclient_main_t *pem = &pppoeclient_main;
++  u32 *from = vlib_frame_vector_args (from_frame);
++  u32 n_left = from_frame->n_vectors;
++  const u8 do_handoff = pem->soft_handoff_enabled && pem->soft_handoff_n_workers > 1 &&
++			pem->fq_ip4_index != ~0 && pem->fq_ip6_index != ~0;
++  const u16 my_thread = (u16) vlib_get_thread_index ();
++  u32 local_bi[VLIB_FRAME_SIZE];
++  u16 local_next[VLIB_FRAME_SIZE];
++  u32 n_local = 0;
++  u32 ho4_bi[VLIB_FRAME_SIZE], ho6_bi[VLIB_FRAME_SIZE];
++  u16 ho4_ti[VLIB_FRAME_SIZE], ho6_ti[VLIB_FRAME_SIZE];
++  u32 n_ho4 = 0, n_ho6 = 0;
++  u32 i;
++
++  for (i = 0; i < n_left; i++)
++    {
++      u32 bi0 = from[i];
++      vlib_buffer_t *b0 = vlib_get_buffer (vm, bi0);
++      pppoeclient_session_input_result_t r0;
++      u32 next0;
++      u16 ti0;
++      u32 hash0;
++
++      pppoeclient_session_input_one (vm, pem, b0, &r0);
++      pppoeclient_session_input_trace (vm, node, b0, &r0);
++      next0 = r0.next;
++
++      if (PREDICT_TRUE (do_handoff) &&
++	  (next0 == PPPOECLIENT_SESSION_INPUT_NEXT_IP4_INPUT ||
++	   next0 == PPPOECLIENT_SESSION_INPUT_NEXT_IP6_INPUT))
++	{
++	  hash0 = pppoeclient_session_flow_hash (
++	    b0, next0 == PPPOECLIENT_SESSION_INPUT_NEXT_IP6_INPUT);
++	  ti0 = pppoeclient_soft_handoff_thread (pem, hash0);
++	  if (ti0 != my_thread)
++	    {
++	      if (next0 == PPPOECLIENT_SESSION_INPUT_NEXT_IP4_INPUT)
++		{
++		  ho4_bi[n_ho4] = bi0;
++		  ho4_ti[n_ho4] = ti0;
++		  n_ho4++;
++		}
++	      else
++		{
++		  ho6_bi[n_ho6] = bi0;
++		  ho6_ti[n_ho6] = ti0;
++		  n_ho6++;
++		}
++	      continue;
++	    }
++	  /* Same worker: local graph enqueue (no FQ round-trip). */
+ 	}
+ 
+-      vlib_put_next_frame (vm, node, next_index, n_left_to_next);
++      local_bi[n_local] = bi0;
++      local_next[n_local] = (u16) next0;
++      n_local++;
+     }
+ 
+-  vlib_node_increment_counter (vm, pppoeclient_session_input_node.index,
++  if (n_local)
++    vlib_buffer_enqueue_to_next (vm, node, local_bi, local_next, n_local);
+ 
+-			       PPPOECLIENT_ERROR_SESSION_PKT_RCVED,
++  if (PREDICT_TRUE (do_handoff))
++    pppoeclient_session_handoff_flush (vm, node, pem, ho4_bi, ho4_ti, n_ho4, ho6_bi, ho6_ti,
++				       n_ho6);
+ 
+-			       session_pkts);
++  vlib_node_increment_counter (vm, pppoeclient_session_input_node.index,
++			       PPPOECLIENT_ERROR_SESSION_PKT_RCVED, from_frame->n_vectors);
+ 
+   return from_frame->n_vectors;
+ }
+diff -ruN '--exclude=CMakeLists.txt' '--exclude=UPSTREAM_COMMIT' handoff-diff/upstream/pppoeclient_api.c handoff-diff/pd/pppoeclient_api.c
+--- handoff-diff/upstream/pppoeclient_api.c	2026-08-05 20:54:48.108995845 +0000
++++ handoff-diff/pd/pppoeclient_api.c	2026-08-05 21:05:52.431288999 +0000
+@@ -24,6 +24,7 @@
+ #include <dhcp/dhcp6_ia_na_client_dp.h>
+ #include <dhcp/dhcp6_pd_client_dp.h>
+ #include <pppoeclient/pppoeclient.h>
++#include <pppoeclient/dhcp6_runtime_shims.h>
+ #include <pppoeclient/pppoeclient.api_types.h>
+ #include <pppoeclient/pppoeclient.api_enum.h>
+ 
+diff -ruN '--exclude=CMakeLists.txt' '--exclude=UPSTREAM_COMMIT' handoff-diff/upstream/pppoeclient.c handoff-diff/pd/pppoeclient.c
+--- handoff-diff/upstream/pppoeclient.c	2026-08-05 20:54:48.104995855 +0000
++++ handoff-diff/pd/pppoeclient.c	2026-08-05 21:05:45.439307155 +0000
+@@ -20,8 +20,8 @@
+ #include <vlib/log.h>
+ #include <vlib/unix/unix.h>
+ #include <vlib/unix/plugin.h>
++#include <vlib/threads.h>
+ #include <vnet/ethernet/ethernet.h>
+-#include <vnet/dpo/interface_tx_dpo.h>
+ #include <vnet/plugin/plugin.h>
+ #include <vpp/app/version.h>
+ #include <vnet/ip/ip_interface.h>
+@@ -30,6 +30,7 @@
+ #include <ppp/packet.h>
+ #include <pppoeclient/pppox/pppox.h>
+ #include <pppoeclient/pppoeclient.h>
++#include <pppoeclient/dhcp6_runtime_shims.h>
+ 
+ #include <vppinfra/hash.h>
+ #include <vppinfra/random.h>
+@@ -4302,6 +4303,70 @@
+ };
+ 
+ static clib_error_t *
++set_pppoeclient_soft_handoff_command_fn (vlib_main_t *vm, unformat_input_t *input,
++					 vlib_cli_command_t *cmd)
++{
++  pppoeclient_main_t *pem = &pppoeclient_main;
++  u32 enable = ~0;
++
++  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
++    {
++      if (unformat (input, "on") || unformat (input, "enable"))
++	enable = 1;
++      else if (unformat (input, "off") || unformat (input, "disable"))
++	enable = 0;
++      else
++	return clib_error_return (0, "expect on|off");
++    }
++
++  if (enable == ~0)
++    return clib_error_return (0, "expect on|off");
++
++  if (enable && (pem->soft_handoff_n_workers <= 1 || pem->fq_ip4_index == ~0 ||
++		 pem->fq_ip6_index == ~0))
++    return clib_error_return (0, "soft-handoff unavailable (need >1 workers + fq init)");
++
++  pem->soft_handoff_enabled = enable ? 1 : 0;
++  vlib_cli_output (vm, "pppoeclient soft-handoff %s",
++		   pem->soft_handoff_enabled ? "on" : "off");
++  return 0;
++}
++
++/*?
++ * Enable/disable soft worker handoff after PPPoE session unwrap (Digi Option B).
++ * When on, IP4/IP6 payloads are hashed (5-tuple) and frame-queued onto
++ * ip4-input / ip6-input of other workers. PPP control stays local.
++ *
++ * @cliexpar
++ * @cliexcmd{set pppoeclient soft-handoff on}
++ ?*/
++VLIB_CLI_COMMAND (set_pppoeclient_soft_handoff_command, static) = {
++  .path = "set pppoeclient soft-handoff",
++  .short_help = "set pppoeclient soft-handoff <on|off>",
++  .function = set_pppoeclient_soft_handoff_command_fn,
++};
++
++static clib_error_t *
++show_pppoeclient_soft_handoff_command_fn (vlib_main_t *vm, unformat_input_t *input,
++					  vlib_cli_command_t *cmd)
++{
++  pppoeclient_main_t *pem = &pppoeclient_main;
++
++  vlib_cli_output (vm, "soft-handoff: %s", pem->soft_handoff_enabled ? "on" : "off");
++  vlib_cli_output (vm, "  workers: %u", pem->soft_handoff_n_workers);
++  vlib_cli_output (vm, "  fq-ip4-index: %u", pem->fq_ip4_index);
++  vlib_cli_output (vm, "  fq-ip6-index: %u", pem->fq_ip6_index);
++  vlib_cli_output (vm, "  counters: show error | grep HANDOFF");
++  return 0;
++}
++
++VLIB_CLI_COMMAND (show_pppoeclient_soft_handoff_command, static) = {
++  .path = "show pppoeclient soft-handoff",
++  .short_help = "show pppoeclient soft-handoff",
++  .function = show_pppoeclient_soft_handoff_command_fn,
++};
++
++static clib_error_t *
+ show_pppoeclient_command_fn (vlib_main_t *vm, unformat_input_t *input, vlib_cli_command_t *cmd)
+ {
+   pppoeclient_main_t *pem = &pppoeclient_main;
+@@ -4919,6 +4984,31 @@
+   if (pem->rng_seed == 0)
+     pem->rng_seed = 1;
+ 
++  /* Soft handoff frame queues → ip4-input / ip6-input on target workers.
++   * Built against Digi 26.06-release headers (ABI248 native — no binary
++   * stride patch needed for a rebuild). Disabled automatically when there
++   * is only one worker. */
++  pem->fq_ip4_index = ~0;
++  pem->fq_ip6_index = ~0;
++  pem->soft_handoff_n_workers = vlib_num_workers ();
++  pem->soft_handoff_enabled = pem->soft_handoff_n_workers > 1;
++  if (pem->soft_handoff_enabled)
++    {
++      vlib_node_t *ip4_in = vlib_get_node_by_name (vm, (u8 *) "ip4-input");
++      vlib_node_t *ip6_in = vlib_get_node_by_name (vm, (u8 *) "ip6-input");
++      if (ip4_in && ip6_in)
++	{
++	  pem->fq_ip4_index = vlib_frame_queue_main_init (ip4_in->index, 0);
++	  pem->fq_ip6_index = vlib_frame_queue_main_init (ip6_in->index, 0);
++	}
++      else
++	{
++	  pem->soft_handoff_enabled = 0;
++	  vlib_log (VLIB_LOG_LEVEL_WARNING, pppoeclient_log_class,
++		    "soft-handoff disabled: ip4-input/ip6-input not found");
++	}
++    }
++
+   /* Keep ethertype registration disabled for now. VPP allows only one
+    * plugin to register a given Ethernet type, so PPPoE ingress currently
+    * goes through the device-input feature dispatch path in node.c to
+@@ -5327,7 +5417,7 @@
+ VLIB_MAIN_LOOP_EXIT_FUNCTION (pppoeclient_exit);
+ VLIB_PLUGIN_REGISTER () = {
+   .version = VPP_BUILD_VER,
+-  .description = "PPPoEClient",
++  .description = "PPPoEClient + soft-handoff (PD Option B)",
+ };
+ /*
+  *
+diff -ruN '--exclude=CMakeLists.txt' '--exclude=UPSTREAM_COMMIT' handoff-diff/upstream/pppoeclient_error.def handoff-diff/pd/pppoeclient_error.def
+--- handoff-diff/upstream/pppoeclient_error.def	2026-08-05 20:54:48.108995845 +0000
++++ handoff-diff/pd/pppoeclient_error.def	2026-08-05 20:57:56.840515424 +0000
+@@ -23,3 +23,6 @@
+ pppoeclient_error (SESSION_ID_COLLISION, "PADS session-id already bound to another client")
+ pppoeclient_error (PPPOX_PLUGIN_MISSING, "pppox plugin symbol not available to lift session")
+ pppoeclient_error (REQUEST_UNSELECTED_AC_PADO, "PADO in REQUEST from an AC that was not selected")
++pppoeclient_error (HANDOFF_IP4, "session IP4 packets soft-handed to other workers")
++pppoeclient_error (HANDOFF_IP6, "session IP6 packets soft-handed to other workers")
++pppoeclient_error (HANDOFF_CONGESTION_DROP, "session soft-handoff congestion drops")
+diff -ruN '--exclude=CMakeLists.txt' '--exclude=UPSTREAM_COMMIT' handoff-diff/upstream/pppoeclient.h handoff-diff/pd/pppoeclient.h
+--- handoff-diff/upstream/pppoeclient.h	2026-08-05 20:54:48.104995855 +0000
++++ handoff-diff/pd/pppoeclient.h	2026-08-05 20:57:56.840515424 +0000
+@@ -509,6 +509,16 @@
+   f64 auth_backoff_jitter_fraction;
+   u32 rng_seed;
+ 
++  /* Soft handoff after PPPoE session unwrap (Digi Option B).
++   * When enabled and workers > 1, IP4/IP6 payloads leave the WAN RX worker
++   * via frame queues bound to ip4-input / ip6-input so post-PPPoE work
++   * (VXLAN, fib, NAT, output) spreads across workers. PPP control stays
++   * local on the RX worker. Default: on when workers > 1. */
++  u8 soft_handoff_enabled;
++  u32 fq_ip4_index;
++  u32 fq_ip6_index;
++  u32 soft_handoff_n_workers;
++
+   /* convenience */
+   vlib_main_t *vlib_main;
+   vnet_main_t *vnet_main;
+diff -ruN '--exclude=CMakeLists.txt' '--exclude=UPSTREAM_COMMIT' handoff-diff/upstream/pppox/cli.c handoff-diff/pd/pppox/cli.c
+--- handoff-diff/upstream/pppox/cli.c	2026-08-05 20:54:48.108995845 +0000
++++ handoff-diff/pd/pppox/cli.c	2026-08-05 21:06:15.763228405 +0000
+@@ -11,7 +11,6 @@
+ #include <vlib/vlib.h>
+ #include <vlib/unix/unix.h>
+ #include <vnet/ethernet/ethernet.h>
+-#include <vnet/dpo/interface_tx_dpo.h>
+ #include <vnet/plugin/plugin.h>
+ #include <vpp/app/version.h>
+ #include <ppp/packet.h>
+diff -ruN '--exclude=CMakeLists.txt' '--exclude=UPSTREAM_COMMIT' handoff-diff/upstream/pppox/node.c handoff-diff/pd/pppox/node.c
+--- handoff-diff/upstream/pppox/node.c	2026-08-05 20:54:48.108995845 +0000
++++ handoff-diff/pd/pppox/node.c	2026-08-05 21:06:15.767228395 +0000
+@@ -11,7 +11,6 @@
+ #include <vlib/vlib.h>
+ #include <vlib/unix/unix.h>
+ #include <vnet/ethernet/ethernet.h>
+-#include <vnet/dpo/interface_tx_dpo.h>
+ #include <vnet/plugin/plugin.h>
+ #include <vpp/app/version.h>
+ #include <ppp/packet.h>
+diff -ruN '--exclude=CMakeLists.txt' '--exclude=UPSTREAM_COMMIT' handoff-diff/upstream/pppox/pppox.c handoff-diff/pd/pppox/pppox.c
+--- handoff-diff/upstream/pppox/pppox.c	2026-08-05 20:54:48.108995845 +0000
++++ handoff-diff/pd/pppox/pppox.c	2026-08-05 21:06:15.767228395 +0000
+@@ -11,7 +11,6 @@
+ #include <vlib/vlib.h>
+ #include <vlib/unix/unix.h>
+ #include <vnet/ethernet/ethernet.h>
+-#include <vnet/dpo/interface_tx_dpo.h>
+ #include <vnet/plugin/plugin.h>
+ #include <vpp/app/version.h>
+ 

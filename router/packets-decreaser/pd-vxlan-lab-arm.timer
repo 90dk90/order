@@ -1,0 +1,11 @@
+[Unit]
+Description=Timer: arm PD VXLAN lab every minute until ready
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60
+AccuracySec=5
+Persistent=false
+
+[Install]
+WantedBy=timers.target
