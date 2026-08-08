@@ -73,19 +73,24 @@ html, body {
   position: absolute; inset: 0;
   display: flex; flex-direction: column; justify-content: center;
   padding: 140px 80px 180px;
-  opacity: 0; visibility: hidden;
-  transform: translateY(40px) scale(0.96);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(28px) scale(0.97);
   will-change: transform, opacity;
 }
 .scene.on {
-  opacity: 1; visibility: visible;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
   transform: translateY(0) scale(1);
-  transition: opacity 220ms ease, transform 380ms cubic-bezier(.16,1,.3,1), visibility 0s;
+  transition: opacity 180ms ease, transform 320ms cubic-bezier(.16,1,.3,1);
 }
-.scene.off {
-  opacity: 0; visibility: hidden;
-  transform: translateY(-36px) scale(1.02);
-  transition: opacity 180ms ease, transform 240ms ease, visibility 0s linear 180ms;
+/* Instant hide — no crossfade ghosting between scenes */
+.scene:not(.on) {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  transition: none !important;
 }
 
 .kicker {
@@ -268,13 +273,9 @@ function cut() {
 
 function setScene(id) {
   if (current === id) return;
-  const prev = current;
   current = id;
   scenes.forEach(({ id: sid }) => {
-    const el = document.getElementById(sid);
-    el.classList.remove("on", "off");
-    if (sid === id) el.classList.add("on");
-    else if (sid === prev) el.classList.add("off");
+    document.getElementById(sid).classList.toggle("on", sid === id);
   });
   cut();
   if (id === "s2") {
