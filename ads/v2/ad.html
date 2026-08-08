@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<title>1VPS TikTok</title>
+<style>
+@font-face { font-family: Outfit; font-weight: 400; src: url("fonts/outfit-1.ttf") format("truetype"); }
+@font-face { font-family: Outfit; font-weight: 600; src: url("fonts/outfit-2.ttf") format("truetype"); }
+@font-face { font-family: Outfit; font-weight: 700; src: url("fonts/outfit-3.ttf") format("truetype"); }
+@font-face { font-family: Outfit; font-weight: 800; src: url("fonts/outfit-4.ttf") format("truetype"); }
+
+:root {
+  --bg: #070b14;
+  --ink: #ffffff;
+  --mute: #a1a1aa;
+  --blue: #4f8cff;
+  --mint: #34d399;
+  --line: rgba(255,255,255,0.10);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  width: 1080px; height: 1920px;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: Outfit, system-ui, sans-serif;
+}
+
+.stage {
+  position: relative;
+  width: 1080px; height: 1920px;
+  background:
+    radial-gradient(1100px 800px at 50% 12%, rgba(79,140,255,0.22), transparent 58%),
+    radial-gradient(900px 700px at 85% 90%, rgba(52,211,153,0.12), transparent 55%),
+    linear-gradient(180deg, #0b1424 0%, #070b14 50%, #05080f 100%);
+  overflow: hidden;
+}
+
+.grid {
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px);
+  background-size: 80px 80px;
+  mask-image: radial-gradient(circle at 50% 42%, #000 10%, transparent 72%);
+  opacity: 0.5;
+  animation: drift 10s linear infinite;
+}
+@keyframes drift { to { transform: translateY(80px); } }
+
+.orb { position: absolute; border-radius: 50%; filter: blur(70px); pointer-events: none; }
+.orb-a { width: 560px; height: 560px; left: -160px; top: 180px; background: rgba(79,140,255,0.28); animation: a 7s ease-in-out infinite; }
+.orb-b { width: 480px; height: 480px; right: -150px; bottom: 240px; background: rgba(52,211,153,0.18); animation: b 8s ease-in-out infinite; }
+@keyframes a { 50% { transform: translate(50px,-40px) scale(1.08); } }
+@keyframes b { 50% { transform: translate(-40px,30px) scale(1.07); } }
+
+.brand-mark {
+  position: absolute; top: 64px; left: 80px; right: 80px;
+  display: flex; align-items: center; justify-content: space-between;
+  z-index: 8; opacity: 0; transform: translateY(-8px);
+}
+.brand-mark.show { opacity: 1; transform: none; transition: 280ms ease; }
+.logo { font-weight: 800; font-size: 40px; letter-spacing: -0.03em; }
+.logo span { color: var(--blue); }
+.pill {
+  font-size: 22px; font-weight: 600; color: var(--mute);
+  border: 1px solid var(--line); padding: 10px 18px; border-radius: 999px;
+  background: rgba(255,255,255,0.03);
+}
+
+.scene {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; justify-content: center;
+  padding: 140px 80px 180px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(28px) scale(0.97);
+  will-change: transform, opacity;
+}
+.scene.on {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+  transition: opacity 180ms ease, transform 320ms cubic-bezier(.16,1,.3,1);
+}
+/* Instant hide — no crossfade ghosting between scenes */
+.scene:not(.on) {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  transition: none !important;
+}
+
+.kicker {
+  font-size: 30px; font-weight: 700; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--blue); margin-bottom: 26px;
+}
+.kicker.mint { color: var(--mint); }
+
+.h1 {
+  font-size: 120px; line-height: 0.94; font-weight: 800;
+  letter-spacing: -0.05em; color: #fff; max-width: 920px;
+}
+.h1 .blue { color: var(--blue); }
+.h1 .mint { color: var(--mint); }
+.h1.xl { font-size: 132px; }
+
+.sub {
+  margin-top: 34px; font-size: 36px; line-height: 1.3;
+  color: var(--mute); font-weight: 400; max-width: 840px;
+}
+
+.os-row { margin-top: 52px; display: flex; flex-wrap: wrap; gap: 14px; }
+.chip {
+  font-size: 30px; font-weight: 700; padding: 18px 24px; border-radius: 18px;
+  border: 1px solid var(--line); background: rgba(255,255,255,0.035);
+  opacity: 0; transform: translateY(18px) scale(0.96);
+}
+.chip.show {
+  opacity: 1; transform: none;
+  transition: opacity 220ms ease, transform 320ms cubic-bezier(.16,1,.3,1);
+}
+.chip.done {
+  border-color: rgba(52,211,153,0.55);
+  background: rgba(52,211,153,0.08);
+}
+.chip.done::after { content: " ✓"; color: var(--mint); }
+
+.meter {
+  margin-top: 48px; opacity: 0; transform: translateY(12px);
+}
+.meter.show { opacity: 1; transform: none; transition: 280ms ease; }
+.meter-label {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 28px; font-weight: 600; color: var(--mute); margin-bottom: 14px;
+}
+.meter-label b { color: var(--mint); font-size: 40px; font-weight: 800; }
+.meter-track {
+  height: 14px; border-radius: 999px; background: rgba(255,255,255,0.08); overflow: hidden;
+}
+.meter-fill {
+  height: 100%; width: 0%; border-radius: inherit;
+  background: linear-gradient(90deg, var(--blue), var(--mint));
+}
+
+.shield {
+  margin-top: 44px; width: 176px; height: 206px; position: relative;
+  background: linear-gradient(160deg, #4f8cff, #34d399);
+  clip-path: polygon(50% 0%, 100% 18%, 92% 72%, 50% 100%, 8% 72%, 0% 18%);
+  display: grid; place-items: center;
+  box-shadow: 0 28px 70px rgba(79,140,255,0.35);
+  animation: pulse 1.5s ease-in-out infinite;
+  opacity: 0; transform: scale(0.85);
+}
+.shield.show { opacity: 1; transform: scale(1); transition: 360ms cubic-bezier(.16,1,.3,1); }
+.shield::before {
+  content: ""; position: absolute; inset: 8px; background: #070b14;
+  clip-path: polygon(50% 0%, 100% 18%, 92% 72%, 50% 100%, 8% 72%, 0% 18%);
+}
+.shield .ok { position: relative; z-index: 1; font-size: 78px; font-weight: 800; color: var(--mint); }
+@keyframes pulse { 50% { filter: brightness(1.1); transform: scale(1.04); } }
+.shield.show { animation: pulse 1.5s ease-in-out infinite; }
+
+.url {
+  margin-top: 40px; font-size: 70px; font-weight: 800;
+  letter-spacing: -0.03em; color: var(--blue);
+}
+.cta {
+  margin-top: 30px; display: inline-flex; align-items: center;
+  background: #fff; color: #070b14; font-weight: 800; font-size: 36px;
+  padding: 28px 40px; border-radius: 20px;
+  animation: cta 1.2s ease-in-out infinite;
+}
+@keyframes cta { 50% { transform: scale(1.04); } }
+
+.progress {
+  position: absolute; left: 80px; right: 80px; bottom: 64px;
+  height: 5px; background: rgba(255,255,255,0.08); border-radius: 999px; z-index: 9;
+}
+.progress > i {
+  display: block; height: 100%; width: 0%;
+  background: linear-gradient(90deg, var(--blue), var(--mint)); border-radius: inherit;
+}
+.flash {
+  position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 20;
+}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="grid"></div>
+  <div class="orb orb-a"></div>
+  <div class="orb orb-b"></div>
+  <div class="flash" id="flash"></div>
+
+  <div class="brand-mark" id="brandMark">
+    <div class="logo">1<span>VPS</span>.cc</div>
+    <div class="pill">Cloud Belgique</div>
+  </div>
+
+  <section class="scene" id="s1">
+    <div class="kicker">Cloud VPS</div>
+    <h1 class="h1 xl">1<span class="blue">VPS</span>.cc</h1>
+    <p class="sub">Hébergement cloud, sans friction.</p>
+  </section>
+
+  <section class="scene" id="s2">
+    <div class="kicker mint">Déploiement</div>
+    <h1 class="h1">Tous les OS.<br><span class="mint">En 60&nbsp;s.</span></h1>
+    <div class="os-row" id="osRow">
+      <div class="chip" data-os>Debian</div>
+      <div class="chip" data-os>Ubuntu</div>
+      <div class="chip" data-os>Windows</div>
+      <div class="chip" data-os>Rocky</div>
+      <div class="chip" data-os>Apps 1-click</div>
+    </div>
+    <div class="meter" id="meter">
+      <div class="meter-label"><span>Provisionnement</span><b id="meterPct">0%</b></div>
+      <div class="meter-track"><div class="meter-fill" id="meterFill"></div></div>
+    </div>
+  </section>
+
+  <section class="scene" id="s3">
+    <div class="kicker">Sécurité</div>
+    <h1 class="h1">Firewall<br><span class="blue">intégré.</span></h1>
+    <p class="sub">Anti-DDoS AS219084 inclus — pas d’option cachée.</p>
+    <div class="shield" id="shield"><div class="ok">✓</div></div>
+  </section>
+
+  <section class="scene" id="s4">
+    <div class="kicker mint">Maintenant</div>
+    <h1 class="h1">Déploie<br>ton VPS.</h1>
+    <div class="url">1vps.cc</div>
+    <div class="cta">Commencer →</div>
+  </section>
+
+  <div class="progress"><i id="bar"></i></div>
+</div>
+
+<script>
+// 10.5s total — synced for punchy TikTok + VO
+const TOTAL = 10500;
+const scenes = [
+  { id: "s1", start: 0, end: 2000 },
+  { id: "s2", start: 2000, end: 5600 },
+  { id: "s3", start: 5600, end: 8200 },
+  { id: "s4", start: 8200, end: 10500 },
+];
+
+const brand = document.getElementById("brandMark");
+const bar = document.getElementById("bar");
+const flash = document.getElementById("flash");
+const chips = [...document.querySelectorAll("[data-os]")];
+const meter = document.getElementById("meter");
+const meterFill = document.getElementById("meterFill");
+const meterPct = document.getElementById("meterPct");
+const shield = document.getElementById("shield");
+
+let current = null;
+let startTs = null;
+let raf = 0;
+
+function cut() {
+  flash.style.transition = "none";
+  flash.style.opacity = "0.14";
+  requestAnimationFrame(() => {
+    flash.style.transition = "opacity 160ms ease";
+    flash.style.opacity = "0";
+  });
+}
+
+function setScene(id) {
+  if (current === id) return;
+  current = id;
+  scenes.forEach(({ id: sid }) => {
+    document.getElementById(sid).classList.toggle("on", sid === id);
+  });
+  cut();
+  if (id === "s2") {
+    chips.forEach((n) => n.classList.remove("show", "done"));
+    meter.classList.remove("show");
+    meterFill.style.width = "0%";
+    meterPct.textContent = "0%";
+  }
+  if (id === "s3") shield.classList.remove("show");
+}
+
+function tick(ts) {
+  if (startTs == null) startTs = ts;
+  const t = ts - startTs;
+  bar.style.width = (Math.min(1, t / TOTAL) * 100).toFixed(2) + "%";
+  brand.classList.toggle("show", t > 120);
+
+  const scene = scenes.find((s) => t >= s.start && t < s.end) || scenes.at(-1);
+  setScene(scene.id);
+
+  if (scene.id === "s2") {
+    const local = t - scene.start;
+    const dur = scene.end - scene.start;
+    chips.forEach((n, i) => {
+      if (local > 200 + i * 180) n.classList.add("show");
+      if (local > 700 + i * 180) n.classList.add("done");
+    });
+    if (local > 500) meter.classList.add("show");
+    const pct = Math.min(100, Math.round((local / dur) * 100));
+    meterFill.style.width = pct + "%";
+    meterPct.textContent = pct + "%";
+  }
+  if (scene.id === "s3") {
+    const local = t - scene.start;
+    if (local > 180) shield.classList.add("show");
+  }
+
+  if (t < TOTAL) raf = requestAnimationFrame(tick);
+  else {
+    document.body.dataset.done = "1";
+    meterPct.textContent = "100%";
+    meterFill.style.width = "100%";
+  }
+}
+
+window.__startAd = () => {
+  cancelAnimationFrame(raf);
+  startTs = null;
+  current = null;
+  document.body.dataset.done = "0";
+  document.querySelectorAll(".scene").forEach((el) => el.classList.remove("on", "off"));
+  raf = requestAnimationFrame(tick);
+};
+window.__stopAd = () => cancelAnimationFrame(raf);
+if (!new URLSearchParams(location.search).has("manual")) window.__startAd();
+</script>
+</body>
+</html>
