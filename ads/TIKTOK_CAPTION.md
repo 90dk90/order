@@ -1,19 +1,19 @@
-# Pub TikTok — 1VPS.cc
+# Pub TikTok — 1VPS.cc (v2)
 
 ## Fichier
-`1vps-tiktok-ad.mp4` — 15 s, 1080×1920 (9:16), H.264 + AAC
+`1vps-tiktok-ad.mp4` — ~10.5 s, 1080×1920 (9:16)
 
 ## Script voix off
-1VPS.cc. Déploie tous les OS en soixante secondes. Linux, Windows, apps one-click. Et avec une protection firewall intégrée. Anti-DDoS inclus. 1VPS.cc — déploie ton VPS maintenant.
+1VPS. Tous les OS en soixante secondes. Firewall intégré, Anti-DDoS inclus. 1vps.cc — déploie maintenant.
 
 ## Structure
-1. **0–3 s** — Brand 1VPS.cc
-2. **3–7 s** — Déploiement rapide de tous les OS
-3. **7–11 s** — Firewall intégré / Anti-DDoS AS219084
-4. **11–15 s** — CTA → 1vps.cc
+1. Brand 1VPS.cc
+2. Tous les OS en 60 s (Debian, Ubuntu, Windows, Rocky, Apps)
+3. Firewall intégré / Anti-DDoS AS219084
+4. CTA → 1vps.cc
 
-## Légende suggérée
-Déploie ton VPS en 60 secondes ⚡
+## Légende
+Déploie ton VPS en 60 secondes
 Tous les OS + firewall intégré
 👉 1vps.cc
 
