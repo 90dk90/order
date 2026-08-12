@@ -29,33 +29,60 @@ export function DigiBadge({
   tone = "zinc",
   children,
   className = "",
+  dot = false,
+  uppercase = false,
 }: {
   tone?: DigiTone;
   children: React.ReactNode;
   className?: string;
+  /** Status pill with leading color dot (Infrawire-style). */
+  dot?: boolean;
+  uppercase?: boolean;
 }) {
   return (
     <span
-      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${toneBadge[tone]} ${className}`}
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${
+        uppercase ? "tracking-wide uppercase" : ""
+      } ${toneBadge[tone]} ${className}`}
     >
+      {dot ? (
+        <span
+          className="h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-90"
+          aria-hidden
+        />
+      ) : null}
       {children}
     </span>
   );
 }
 
+const alertVariantTone: Record<string, DigiTone> = {
+  success: "emerald",
+  warning: "amber",
+  error: "red",
+  danger: "red",
+  info: "sky",
+  neutral: "zinc",
+};
+
 export function DigiAlert({
-  tone = "zinc",
+  tone,
+  variant,
   title,
   children,
   className = "",
 }: {
   tone?: DigiTone;
+  /** Alias used by callers (`warning` / `error` / `info`). */
+  variant?: "success" | "warning" | "error" | "danger" | "info" | "neutral";
   title?: string;
   children?: React.ReactNode;
   className?: string;
 }) {
+  const resolved: DigiTone =
+    tone ?? (variant ? alertVariantTone[variant] ?? "zinc" : "zinc");
   return (
-    <div className={`rounded-xl border px-4 py-3 text-sm ${toneAlert[tone]} ${className}`}>
+    <div className={`rounded-xl border px-4 py-3 text-sm ${toneAlert[resolved]} ${className}`}>
       {title ? <div className="font-semibold">{title}</div> : null}
       {children ? <div className={title ? "mt-1 opacity-90" : ""}>{children}</div> : null}
     </div>
@@ -145,6 +172,8 @@ export function DigiInput({
   type = "text",
   className = "",
   disabled,
+  min,
+  max,
 }: {
   label?: string;
   value: string;
@@ -153,6 +182,8 @@ export function DigiInput({
   type?: string;
   className?: string;
   disabled?: boolean;
+  min?: number;
+  max?: number;
 }) {
   return (
     <label className={`block ${className}`}>
@@ -166,6 +197,8 @@ export function DigiInput({
         value={value}
         disabled={disabled}
         placeholder={placeholder}
+        min={min}
+        max={max}
         onChange={(e) => onChange(e.target.value)}
         className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
       />
@@ -256,33 +289,40 @@ export function DigiPage({
   children,
   className = "",
 }: {
-  title: string;
+  title?: string;
   description?: string;
   icon?: React.ReactNode;
   actions?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
 }) {
+  const showHeader = Boolean(title || description || icon || actions);
   return (
     <div className={`space-y-6 ${className}`}>
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-3">
-            {icon ? (
-              <span className="inline-flex shrink-0 items-center justify-center text-emerald-700 dark:text-emerald-300">
-                {icon}
-              </span>
+      {showHeader ? (
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-3">
+              {icon ? (
+                <span className="inline-flex shrink-0 items-center justify-center text-emerald-700 dark:text-emerald-300">
+                  {icon}
+                </span>
+              ) : null}
+              {title ? (
+                <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 sm:text-3xl dark:text-zinc-100">
+                  {title}
+                </h1>
+              ) : null}
+            </div>
+            {description ? (
+              <p className="mt-1.5 text-base text-zinc-600 dark:text-zinc-300">{description}</p>
             ) : null}
-            <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 sm:text-3xl dark:text-zinc-100">
-              {title}
-            </h1>
           </div>
-          {description ? (
-            <p className="mt-1.5 text-base text-zinc-600 dark:text-zinc-300">{description}</p>
+          {actions ? (
+            <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>
           ) : null}
         </div>
-        {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}
-      </div>
+      ) : null}
       {children}
     </div>
   );

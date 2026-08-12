@@ -174,7 +174,7 @@ function OrderAdditionalIpModal({
             min={1}
             max={16}
             value={qty}
-            onChange={(e) => setQty(e.target.value)}
+            onChange={setQty}
           />
         </label>
         <DigiAlert variant="info">
@@ -256,7 +256,7 @@ function EditPtrModal({
           </span>
           <DigiInput
             value={value}
-            onChange={(e) => setValue(e.target.value)}
+            onChange={setValue}
             placeholder="ex: srv01.example.com."
           />
         </label>
@@ -416,7 +416,8 @@ function PrefixDetailView({
   const gateway =
     (row as NetworkIpRow & { gateway?: string }).gateway ?? "—";
   const dns = (row as NetworkIpRow & { dns?: string }).dns ?? "—";
-  const mac = (row as NetworkIpRow & { mac?: string }).mac ?? "—";
+  const macRaw = (row as NetworkIpRow & { mac?: string }).mac?.trim();
+  const mac = macRaw || "00:00:00:00:00:00";
   const antiDdos =
     (row as NetworkIpRow & { anti_ddos?: boolean }).anti_ddos ?? true;
 
@@ -496,55 +497,58 @@ function PrefixDetailView({
       <div className="mt-8 space-y-7">
         {tab === "general" ? (
           <Fragment>
-            <div className="rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
+            <div className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950/40">
               <div className="flex flex-col gap-5 px-6 py-6 sm:flex-row sm:items-center sm:justify-between sm:px-8">
                 <div className="flex min-w-0 items-center gap-5">
-                  <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg border border-gray-200 bg-gray-50 text-emerald-700 dark:border-gray-700 dark:bg-gray-800 dark:text-emerald-400">
+                  <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-zinc-200 bg-zinc-50 text-emerald-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-emerald-400">
                     <FontAwesomeIcon icon={faNetworkWired} className="h-6 w-6" />
                   </div>
                   <div className="min-w-0">
-                    <p className="text-xs font-medium tracking-widest text-gray-400 uppercase dark:text-gray-500">
+                    <p className="text-xs font-medium tracking-widest text-zinc-400 uppercase dark:text-zinc-500">
                       Détails du préfixe
                     </p>
                     <div className="mt-1.5 flex flex-wrap items-center gap-3">
-                      <span className="truncate font-mono text-2xl font-bold text-gray-900 dark:text-gray-100">
+                      <span className="truncate font-mono text-2xl font-bold text-zinc-900 dark:text-zinc-100">
                         {label}
                       </span>
                       {row.routed ? (
-                        <DigiBadge tone="emerald">Routé</DigiBadge>
+                        <DigiBadge tone="emerald" dot uppercase>
+                          Routé
+                        </DigiBadge>
                       ) : (
-                        <DigiBadge tone="zinc">Non routé</DigiBadge>
+                        <DigiBadge tone="zinc" dot uppercase>
+                          Non routé
+                        </DigiBadge>
                       )}
                     </div>
                   </div>
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center gap-3">
                   <CopyButton value={label} />
-                  <Link
-                    to="/network/ips"
-                    className="inline-flex items-center gap-2.5 rounded-md bg-emerald-700 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-emerald-800"
-                  >
-                    <FontAwesomeIcon
-                      icon={faArrowUpRightFromSquare}
-                      className="h-3.5 w-3.5"
-                    />
-                    Retour aux IPs
+                  <Link to="/network/ips">
+                    <DigiButton type="button" variant="primary">
+                      <FontAwesomeIcon
+                        icon={faArrowUpRightFromSquare}
+                        className="h-3.5 w-3.5"
+                      />
+                      Retour aux IPs
+                    </DigiButton>
                   </Link>
                 </div>
               </div>
             </div>
 
             <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
-              <div className="rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
-                <div className="flex items-center gap-3 border-b border-gray-100 px-6 py-5 dark:border-gray-800">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-md bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">
+              <div className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950/40">
+                <div className="flex items-center gap-3 border-b border-zinc-100 px-6 py-5 dark:border-zinc-800">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">
                     <FontAwesomeIcon icon={faRoute} className="h-4 w-4" />
                   </div>
-                  <h2 className="text-base font-semibold text-gray-800 dark:text-gray-200">
+                  <h2 className="text-base font-semibold text-zinc-800 dark:text-zinc-200">
                     Configuration réseau
                   </h2>
                 </div>
-                <dl className="divide-y divide-gray-100 dark:divide-gray-800">
+                <dl className="divide-y divide-zinc-100 dark:divide-zinc-800">
                   {[
                     { icon: faGlobe, label: "Masque", value: mask },
                     { icon: faRoute, label: "Passerelle", value: gateway },
@@ -560,22 +564,32 @@ function PrefixDetailView({
                   ].map((item) => (
                     <div
                       key={item.label}
-                      className="flex items-center justify-between px-6 py-5"
+                      className="flex items-center justify-between gap-4 px-6 py-5"
                     >
-                      <dt className="flex items-center gap-3 text-base text-gray-500 dark:text-gray-400">
+                      <dt className="flex items-center gap-3 text-base text-zinc-500 dark:text-zinc-400">
                         <FontAwesomeIcon
                           icon={item.icon}
-                          className="h-4 w-4 shrink-0 text-gray-400 dark:text-gray-500"
+                          className="h-4 w-4 shrink-0 text-zinc-400 dark:text-zinc-500"
                         />
                         {item.label}
                       </dt>
                       <dd>
                         {"badge" in item && item.badge ? (
-                          <DigiBadge tone={item.ok ? "emerald" : "zinc"}>
+                          <span
+                            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold tracking-wide uppercase ${
+                              item.ok
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+                                : "border-zinc-200 bg-zinc-50 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+                            }`}
+                          >
+                            <FontAwesomeIcon
+                              icon={faShieldHalved}
+                              className="h-3 w-3"
+                            />
                             {item.value}
-                          </DigiBadge>
+                          </span>
                         ) : (
-                          <span className="font-mono text-base font-medium text-gray-900 dark:text-gray-100">
+                          <span className="font-mono text-base font-medium text-zinc-900 dark:text-zinc-100">
                             {item.value}
                           </span>
                         )}
@@ -585,53 +599,58 @@ function PrefixDetailView({
                 </dl>
               </div>
 
-              <div className="rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
-                <div className="flex items-center gap-3 border-b border-gray-100 px-6 py-5 dark:border-gray-800">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-md bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">
+              <div className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950/40">
+                <div className="flex items-center gap-3 border-b border-zinc-100 px-6 py-5 dark:border-zinc-800">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">
                     <FontAwesomeIcon icon={faServer} className="h-4 w-4" />
                   </div>
-                  <h2 className="text-base font-semibold text-gray-800 dark:text-gray-200">
+                  <h2 className="text-base font-semibold text-zinc-800 dark:text-zinc-200">
                     Statut routage
                   </h2>
                 </div>
                 <div className="px-6 py-6">
                   <div className="flex items-start justify-between gap-5">
-                    <p className="text-base text-gray-500 dark:text-gray-400">
+                    <p className="text-base text-zinc-500 dark:text-zinc-400">
                       {row.routed
                         ? "Ce préfixe est actuellement routé vers un service."
                         : "Aucune route active détectée pour ce préfixe."}
                     </p>
-                    <DigiBadge tone={row.routed ? "emerald" : "zinc"}>
+                    <DigiBadge
+                      tone={row.routed ? "emerald" : "zinc"}
+                      dot
+                      uppercase
+                    >
                       {row.routed ? "Routé" : "Non routé"}
                     </DigiBadge>
                   </div>
                   {row.service ? (
-                    <div className="mt-6 rounded-md border border-gray-200 dark:border-gray-700">
-                      <div className="flex items-center gap-4 border-b border-gray-100 px-5 py-4 dark:border-gray-800">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-gray-200 bg-gray-50 text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
+                    <div className="mt-6 rounded-xl border border-zinc-200 dark:border-zinc-700">
+                      <div className="flex flex-wrap items-center gap-4 border-b border-zinc-100 px-5 py-4 dark:border-zinc-800">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-zinc-50 text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400">
                           <FontAwesomeIcon icon={faServer} className="h-5 w-5" />
                         </div>
                         <div className="min-w-0 flex-1">
-                          <p className="text-xs font-medium tracking-widest text-gray-400 uppercase dark:text-gray-500">
+                          <p className="text-xs font-medium tracking-widest text-zinc-400 uppercase dark:text-zinc-500">
                             Service routé
                           </p>
-                          <p className="mt-0.5 truncate text-base font-semibold text-gray-900 dark:text-gray-100">
+                          <p className="mt-0.5 truncate text-base font-semibold text-zinc-900 dark:text-zinc-100">
                             {row.service.name}
                           </p>
                         </div>
                         <Link
                           to={`/services/${encodeURIComponent(row.service.id)}`}
-                          className="inline-flex shrink-0 items-center gap-2 rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:border-gray-400 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300"
                         >
-                          Ouvrir le service
-                          <FontAwesomeIcon
-                            icon={faArrowUpRightFromSquare}
-                            className="h-3.5 w-3.5"
-                          />
+                          <DigiButton type="button" variant="secondary" size="sm">
+                            Ouvrir le service
+                            <FontAwesomeIcon
+                              icon={faArrowUpRightFromSquare}
+                              className="h-3.5 w-3.5"
+                            />
+                          </DigiButton>
                         </Link>
                       </div>
                       <div className="px-5 py-3">
-                        <p className="text-sm text-gray-400 dark:text-gray-500">
+                        <p className="text-sm text-zinc-400 dark:text-zinc-500">
                           ID {row.service.id}
                         </p>
                       </div>
@@ -641,18 +660,18 @@ function PrefixDetailView({
               </div>
             </div>
 
-            <div className="rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
-              <div className="border-b border-gray-100 px-6 py-5 dark:border-gray-800">
+            <div className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950/40">
+              <div className="border-b border-zinc-100 px-6 py-5 dark:border-zinc-800">
                 <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
                   <div className="flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-md bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">
                       <FontAwesomeIcon icon={faGlobe} className="h-4 w-4" />
                     </div>
                     <div>
-                      <h2 className="text-base font-semibold text-gray-800 dark:text-gray-200">
+                      <h2 className="text-base font-semibold text-zinc-800 dark:text-zinc-200">
                         PTR / Reverse DNS
                       </h2>
-                      <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
+                      <p className="mt-0.5 text-sm text-zinc-500 dark:text-zinc-400">
                         Associez un nom d&apos;hôte (PTR) à chaque IP pour le
                         reverse DNS.
                       </p>
@@ -661,10 +680,10 @@ function PrefixDetailView({
                   <div className="relative w-full shrink-0 sm:max-w-xs">
                     <FontAwesomeIcon
                       icon={faSearch}
-                      className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-gray-400"
+                      className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-zinc-400"
                     />
                     <input
-                      className="w-full rounded-md border border-gray-300 bg-white py-2.5 pr-4 pl-10 text-sm text-gray-900 outline-none placeholder:text-gray-400 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/15 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                      className="w-full rounded-lg border border-zinc-300 bg-white py-2.5 pr-4 pl-10 text-sm text-zinc-900 outline-none placeholder:text-zinc-400 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/15 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
                       placeholder="Filtrer par IP ou hostname…"
                       value={ptrFilter}
                       onChange={(e) => setPtrFilter(e.target.value)}
@@ -673,109 +692,115 @@ function PrefixDetailView({
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 bg-gray-50/60 px-6 py-3.5 dark:border-gray-800 dark:bg-gray-800/30">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 bg-zinc-50/60 px-6 py-3.5 dark:border-zinc-800 dark:bg-zinc-900/40">
                 <div className="flex items-center gap-2">
-                  <button
+                  <DigiButton
                     type="button"
-                    className="rounded border border-gray-300 bg-white px-3.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-gray-400 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400"
+                    variant="secondary"
+                    size="sm"
                     onClick={() => setSelected(true)}
                   >
                     Sélectionner tout
-                  </button>
-                  <button
+                  </DigiButton>
+                  <DigiButton
                     type="button"
+                    variant="secondary"
+                    size="sm"
                     disabled={!selected}
-                    className="rounded border border-gray-300 bg-white px-3.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-gray-400 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400"
                     onClick={() => setSelected(false)}
                   >
                     Tout retirer
-                  </button>
+                  </DigiButton>
                 </div>
-                <button
+                <DigiButton
                   type="button"
+                  variant="secondary"
+                  size="sm"
                   disabled={!selected}
                   onClick={downloadCsv}
-                  className="inline-flex items-center gap-2 rounded border border-gray-300 bg-white px-3.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-gray-400 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400"
                 >
                   <FontAwesomeIcon icon={faDownload} className="h-3.5 w-3.5" />
                   Télécharger (CSV)
-                </button>
+                </DigiButton>
               </div>
 
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[900px]">
                   <thead>
-                    <tr className="border-b border-gray-100 bg-gray-50 text-left dark:border-gray-800 dark:bg-gray-800/50">
+                    <tr className="border-b border-zinc-100 bg-zinc-50 text-left dark:border-zinc-800 dark:bg-zinc-900/50">
                       <th className="w-12 px-6 py-4" />
-                      <th className="px-6 py-4 text-sm font-semibold text-gray-500 dark:text-gray-400">
+                      <th className="px-6 py-4 text-sm font-semibold text-zinc-500 dark:text-zinc-400">
                         IP
                       </th>
-                      <th className="px-6 py-4 text-sm font-semibold text-gray-500 dark:text-gray-400">
+                      <th className="px-6 py-4 text-sm font-semibold text-zinc-500 dark:text-zinc-400">
                         Zone
                       </th>
-                      <th className="px-6 py-4 text-sm font-semibold text-gray-500 dark:text-gray-400">
+                      <th className="px-6 py-4 text-sm font-semibold text-zinc-500 dark:text-zinc-400">
                         État PTR
                       </th>
-                      <th className="px-6 py-4 text-right text-sm font-semibold text-gray-500 dark:text-gray-400">
+                      <th className="px-6 py-4 text-right text-sm font-semibold text-zinc-500 dark:text-zinc-400">
                         Gérer
                       </th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                  <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
                     {ptrVisible ? (
-                      <tr className="hover:bg-gray-50/80 dark:hover:bg-gray-800/40">
+                      <tr className="hover:bg-zinc-50/80 dark:hover:bg-zinc-900/40">
                         <td className="px-6 py-4">
                           <input
                             type="checkbox"
-                            className="h-4 w-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-600"
+                            className="h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-600"
                             checked={selected}
                             onChange={(e) => setSelected(e.target.checked)}
                           />
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-3">
-                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800">
+                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900">
                               <FontAwesomeIcon
                                 icon={faNetworkWired}
-                                className="h-3.5 w-3.5 text-gray-400"
+                                className="h-3.5 w-3.5 text-zinc-400"
                               />
                             </div>
-                            <span className="font-mono text-base text-gray-800 dark:text-gray-200">
+                            <span className="font-mono text-base text-zinc-800 dark:text-zinc-200">
                               {ipBare}
                             </span>
                           </div>
                         </td>
-                        <td className="px-6 py-4 font-mono text-sm text-gray-400 dark:text-gray-500">
+                        <td className="px-6 py-4 font-mono text-sm text-zinc-400 dark:text-zinc-500">
                           {zone}
                         </td>
                         <td className="px-6 py-4">
                           {ptr ? (
-                            <span className="font-mono text-sm text-gray-700 dark:text-gray-300">
+                            <span className="font-mono text-sm text-zinc-700 dark:text-zinc-300">
                               {ptr}
                             </span>
                           ) : (
-                            <DigiBadge tone="zinc">Non défini</DigiBadge>
+                            <DigiBadge tone="zinc" dot uppercase>
+                              Non défini
+                            </DigiBadge>
                           )}
                         </td>
                         <td className="px-6 py-4 text-right">
-                          <button
+                          <DigiButton
                             type="button"
+                            variant="secondary"
+                            size="sm"
                             onClick={() => setEditOpen(true)}
-                            className="inline-flex items-center gap-2 rounded border border-gray-300 bg-white px-3.5 py-1.5 text-sm font-medium text-gray-600 transition hover:border-gray-400 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400"
                           >
                             <FontAwesomeIcon
                               icon={faPencil}
                               className="h-3.5 w-3.5"
                             />
                             Modifier
-                          </button>
+                          </DigiButton>
                         </td>
                       </tr>
                     ) : (
                       <tr>
                         <td
                           colSpan={5}
-                          className="px-6 py-10 text-center text-sm text-gray-500"
+                          className="px-6 py-10 text-center text-sm text-zinc-500"
                         >
                           Aucun PTR à afficher
                         </td>
@@ -784,7 +809,7 @@ function PrefixDetailView({
                   </tbody>
                 </table>
               </div>
-              <div className="border-t border-gray-100 px-6 py-3.5 text-xs text-gray-400 dark:border-gray-800 dark:text-gray-500">
+              <div className="border-t border-zinc-100 px-6 py-3.5 text-xs text-zinc-400 dark:border-zinc-800 dark:text-zinc-500">
                 {selected
                   ? "1 ligne(s) sélectionnée(s)."
                   : "Aucune ligne sélectionnée."}
@@ -804,11 +829,11 @@ function PrefixDetailView({
         ) : null}
 
         {tab === "stats" ? (
-          <DigiCard padding="lg">
-            <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+          <DigiCard>
+            <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
               Statistiques réseau
             </h2>
-            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
               Trafic agrégé pour le préfixe {label}
             </p>
             <div className="mt-8">
@@ -821,11 +846,11 @@ function PrefixDetailView({
         ) : null}
 
         {tab === "analysis" ? (
-          <DigiCard padding="lg">
-            <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+          <DigiCard>
+            <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
               Analyse du trafic
             </h2>
-            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
               Trafic applicatif pour {ipBare}
             </p>
             <div className="mt-8">
@@ -838,13 +863,13 @@ function PrefixDetailView({
         ) : null}
 
         {tab === "attacks" ? (
-          <DigiCard padding="lg">
+          <DigiCard>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
                   Historique des attaques
                 </h2>
-                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
                   Événements DDoS enregistrés pour {label}
                 </p>
               </div>
@@ -905,9 +930,11 @@ function PrefixDetailView({
                             tone={
                               String(inc.status).toLowerCase().includes("actif") ||
                               String(inc.status).toLowerCase() === "active"
-                                ? "danger"
-                                : "neutral"
+                                ? "red"
+                                : "zinc"
                             }
+                            dot
+                            uppercase
                           >
                             {inc.status || "—"}
                           </DigiBadge>
