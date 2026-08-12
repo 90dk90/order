@@ -24,29 +24,32 @@ export const NetworkHeader = ({
     title: string;
     subtitle: string;
 }) => (
-    <div css={tw`flex items-center sm:items-start gap-3 sm:gap-4`}>
+    <div css={tw`flex items-start gap-3.5 min-w-0`}>
         <div
-            css={tw`w-10 h-10 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl flex items-center justify-center flex-shrink-0`}
+            css={tw`w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5`}
             style={{
-                background: 'rgba(16, 185, 129, 0.14)',
-                color: '#34d399',
-                border: '1px solid rgba(16, 185, 129, 0.28)',
+                background: 'linear-gradient(180deg, rgba(16,185,129,0.18) 0%, rgba(16,185,129,0.08) 100%)',
+                color: CloudUI.accentHover,
+                border: '1px solid rgba(16,185,129,0.28)',
             }}
         >
             <PageIcon size={20} strokeWidth={1.75} />
         </div>
-        <div css={tw`min-w-0 sm:pt-0.5`}>
+        <div css={tw`min-w-0`}>
             <p
-                css={tw`text-xs font-bold m-0 mb-1 uppercase hidden sm:block`}
-                style={{ color: CloudUI.textMuted, letterSpacing: '0.14em', fontSize: '0.65rem' }}
+                css={tw`text-[11px] font-semibold m-0 mb-1 uppercase tracking-wider`}
+                style={{ color: CloudUI.textMuted, letterSpacing: '0.12em' }}
             >
                 Réseau
             </p>
-            <h1 css={tw`text-lg sm:text-2xl font-semibold m-0 tracking-tight`} style={{ color: CloudUI.text }}>
+            <h1
+                css={tw`text-2xl sm:text-[1.75rem] font-semibold m-0 tracking-tight leading-tight`}
+                style={{ color: CloudUI.text }}
+            >
                 {title}
             </h1>
             <p
-                css={tw`text-sm m-0 mt-2 leading-relaxed max-w-2xl hidden sm:block`}
+                css={tw`text-sm m-0 mt-1.5 leading-relaxed max-w-2xl`}
                 style={{ color: CloudUI.textMuted }}
             >
                 {subtitle}
@@ -313,12 +316,12 @@ export const SegmentedControl = <T extends string>({
                     role="tab"
                     aria-selected={active}
                     onClick={() => onChange(opt.id)}
-                    css={tw`flex-1 px-2 sm:px-3 py-2.5 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap border-0 cursor-pointer transition-colors text-center`}
+                    css={tw`flex-1 px-2 sm:px-3 py-2 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap border-0 cursor-pointer transition-colors text-center`}
                     style={{
                         background: active ? CloudUI.accentMuted : 'transparent',
                         color: active ? CloudUI.accentHover : CloudUI.textMuted,
                         boxShadow: active ? 'inset 0 0 0 1px rgba(16,185,129,0.28)' : 'none',
-                        minHeight: 44,
+                        minHeight: 40,
                         WebkitTapHighlightColor: 'transparent',
                     }}
                 >
@@ -630,19 +633,19 @@ export const ActionsMenu = ({ items, label = 'Gérer', fullWidth }: { items: Act
 
 const thStyle: React.CSSProperties = {
     textAlign: 'left',
-    padding: '14px 16px',
-    fontSize: '0.7rem',
+    padding: '12px 16px',
+    fontSize: '0.68rem',
     fontWeight: 650,
-    letterSpacing: '0.06em',
+    letterSpacing: '0.08em',
     textTransform: 'uppercase',
     color: CloudUI.textMuted,
     borderBottom: `1px solid ${HMS.cardBorder}`,
-    background: 'rgba(0,0,0,0.18)',
+    background: 'rgba(0,0,0,0.22)',
     whiteSpace: 'nowrap',
 };
 
 const tdStyle: React.CSSProperties = {
-    padding: '16px',
+    padding: '14px 16px',
     borderBottom: `1px solid ${HMS.cardBorder}`,
     verticalAlign: 'middle',
 };

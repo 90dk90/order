@@ -6,7 +6,6 @@ import * as Icon from 'react-feather';
 import useFlash from '@/plugins/useFlash';
 import Spinner from '@/components/elements/Spinner';
 import NetworkNavTabs from '@/components/network/NetworkNavTabs';
-import HmsModal from '@/components/hms/HmsModal';
 import { HMS } from '@/components/hms/hmsTheme';
 import { CloudUI } from '@/components/hms/cloudUi';
 import {
@@ -16,14 +15,11 @@ import {
     getDdosIncidents,
     getNetworkIps,
     NetworkIpRow,
-    setDdosFilterMode,
-    updateNetworkRdns,
 } from '@/api/network';
 import {
     Badge,
     DataTable,
     EmptyState,
-    GhostButton,
     GhostLink,
     MetaLine,
     MobileCard,
@@ -32,33 +28,139 @@ import {
     NetworkHeader,
     NetworkPage,
     Panel,
-    PrimaryButton,
     SearchField,
     SegmentedControl,
-    StatCard,
     Td,
-    Toolbar,
     copyText,
     formatWhen,
 } from '@/components/network/NetworkUi';
 
 type IpFilter = 'all' | 'always_on' | 'attacked' | 'dynamic';
 
+const Metric = ({
+    label,
+    value,
+    hint,
+    tone = 'default',
+}: {
+    label: string;
+    value: string | number;
+    hint?: string;
+    tone?: 'default' | 'ok' | 'warn' | 'danger';
+}) => {
+    const color =
+        tone === 'ok'
+            ? CloudUI.success
+            : tone === 'warn'
+              ? CloudUI.warning
+              : tone === 'danger'
+                ? CloudUI.danger
+                : CloudUI.text;
+    return (
+        <div css={tw`min-w-0 py-1`}>
+            <p
+                css={tw`m-0 text-[11px] font-semibold uppercase tracking-wider`}
+                style={{ color: CloudUI.textMuted, letterSpacing: '0.08em' }}
+            >
+                {label}
+            </p>
+            <p
+                css={tw`m-0 mt-1 text-2xl font-semibold tabular-nums tracking-tight`}
+                style={{ color }}
+            >
+                {value}
+            </p>
+            {hint ? (
+                <p css={tw`m-0 mt-0.5 text-xs truncate`} style={{ color: CloudUI.textMuted }}>
+                    {hint}
+                </p>
+            ) : null}
+        </div>
+    );
+};
+
+const StatusDot = ({
+    tone,
+    label,
+}: {
+    tone: 'ok' | 'warn' | 'danger' | 'neutral';
+    label: string;
+}) => {
+    const color =
+        tone === 'ok'
+            ? CloudUI.success
+            : tone === 'warn'
+              ? CloudUI.warning
+              : tone === 'danger'
+                ? CloudUI.danger
+                : CloudUI.textMuted;
+    return (
+        <span css={tw`inline-flex items-center gap-2 text-sm`} style={{ color: CloudUI.textSecondary }}>
+            <span
+                css={tw`inline-block rounded-full flex-shrink-0`}
+                style={{ width: 7, height: 7, background: color, boxShadow: `0 0 0 3px ${color}22` }}
+            />
+            {label}
+        </span>
+    );
+};
+
+const CopyIconButton = ({
+    value,
+    copied,
+    onCopy,
+    size = 28,
+}: {
+    value: string;
+    copied: boolean;
+    onCopy: (v: string) => void;
+    size?: number;
+}) => (
+    <button
+        type="button"
+        title={copied ? 'Copié' : 'Copier'}
+        aria-label="Copier l’IP"
+        onClick={() => onCopy(value)}
+        css={tw`inline-flex items-center justify-center rounded-md border-0 cursor-pointer flex-shrink-0 transition-colors`}
+        style={{
+            background: copied ? CloudUI.accentMuted : 'rgba(255,255,255,0.03)',
+            color: copied ? CloudUI.accentHover : CloudUI.textMuted,
+            border: `1px solid ${copied ? 'rgba(16,185,129,0.3)' : HMS.cardBorder}`,
+            width: size,
+            height: size,
+        }}
+    >
+        {copied ? <Icon.Check size={12} /> : <Icon.Copy size={12} />}
+    </button>
+);
+
+const HoverRow = ({ children }: { children: React.ReactNode }) => {
+    const [hover, setHover] = useState(false);
+    return (
+        <tr
+            onMouseEnter={() => setHover(true)}
+            onMouseLeave={() => setHover(false)}
+            style={{
+                background: hover ? 'rgba(255,255,255,0.025)' : 'transparent',
+                transition: 'background 0.12s ease',
+            }}
+        >
+            {children}
+        </tr>
+    );
+};
+
 export default () => {
-    const { clearFlashes, clearAndAddHttpError, addFlash } = useFlash();
-    const { data: ips, error, mutate } = useSWR<NetworkIpRow[]>('network-ips', getNetworkIps, {
+    const { clearFlashes, clearAndAddHttpError } = useFlash();
+    const { data: ips, error } = useSWR<NetworkIpRow[]>('network-ips', getNetworkIps, {
         revalidateOnFocus: true,
     });
-    const { data: modes, mutate: mutateModes } = useSWR<DdosFilterMode[]>('network-ddos-modes', getDdosFilterModes);
+    const { data: modes } = useSWR<DdosFilterMode[]>('network-ddos-modes', getDdosFilterModes);
     const { data: incidents } = useSWR<DdosIncident[]>('network-ddos-incidents', getDdosIncidents);
 
     const [q, setQ] = useState('');
     const [ipFilter, setIpFilter] = useState<IpFilter>('all');
-    const [editing, setEditing] = useState<NetworkIpRow | null>(null);
-    const [hostname, setHostname] = useState('');
-    const [saving, setSaving] = useState(false);
     const [copied, setCopied] = useState<string | null>(null);
-    const [busyIp, setBusyIp] = useState<string | null>(null);
 
     useEffect(() => {
         if (error) clearAndAddHttpError({ error });
@@ -118,34 +220,6 @@ export default () => {
         return { total: list.length, vms, withPtr, alwaysOn, hit };
     }, [ips, modeByIp, lastAttackByIp]);
 
-    if (!ips) {
-        return (
-            <div css={tw`py-32 flex justify-center`}>
-                <Spinner size="large" />
-            </div>
-        );
-    }
-
-    const openEdit = (row: NetworkIpRow) => {
-        setEditing(row);
-        setHostname(row.reverse_dns.preferred || row.reverse_dns.live || '');
-    };
-
-    const saveRdns = async () => {
-        if (!editing) return;
-        setSaving(true);
-        try {
-            await updateNetworkRdns(editing.ip, hostname.trim() || null);
-            await mutate();
-            setEditing(null);
-            addFlash({ key: 'network:ips', type: 'success', message: 'Reverse DNS enregistré.' });
-        } catch (e) {
-            clearAndAddHttpError({ key: 'network:ips', error: e });
-        } finally {
-            setSaving(false);
-        }
-    };
-
     const onCopy = async (ip: string) => {
         const ok = await copyText(ip);
         if (ok) {
@@ -154,20 +228,13 @@ export default () => {
         }
     };
 
-    const toggleMode = async (ip: string, current?: string) => {
-        const next = current === 'always_on' ? 'dynamic' : 'always_on';
-        if (modeByIp[ip]?.filter_mode_locked) return;
-        setBusyIp(ip);
-        try {
-            await setDdosFilterMode(ip, next);
-            await mutateModes();
-            addFlash({ key: 'network:ips', type: 'success', message: `${ip} → ${next}` });
-        } catch (e) {
-            clearAndAddHttpError({ key: 'network:ips', error: e });
-        } finally {
-            setBusyIp(null);
-        }
-    };
+    if (!ips) {
+        return (
+            <div css={tw`py-32 flex justify-center`}>
+                <Spinner size="large" />
+            </div>
+        );
+    }
 
     const filterOptions: { id: IpFilter; label: string }[] = [
         { id: 'all', label: 'Toutes' },
@@ -178,71 +245,90 @@ export default () => {
 
     return (
         <NetworkPage>
-            <NetworkHeader
-                icon={Icon.Globe}
-                title="Adresse IP"
-                subtitle="Gérez vos IPs dédiées LumenVM : reverse DNS, protection DDoS et rattachement aux VPS."
-            />
+            <div
+                css={tw`flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between`}
+            >
+                <NetworkHeader
+                    icon={Icon.Globe}
+                    title="Adresses IP"
+                    subtitle="Préfixes dédiés, reverse DNS et protection DDoS rattachés à vos instances."
+                />
+                <p
+                    css={tw`m-0 text-sm sm:text-right flex-shrink-0`}
+                    style={{ color: CloudUI.textMuted }}
+                >
+                    <span css={tw`font-semibold`} style={{ color: CloudUI.text }}>
+                        {filtered.length}
+                    </span>{' '}
+                    affichée{filtered.length > 1 ? 's' : ''}
+                    {filtered.length !== stats.total ? ` / ${stats.total}` : ''}
+                </p>
+            </div>
 
             <NetworkNavTabs active="ips" />
 
-            <div css={tw`grid grid-cols-2 xl:grid-cols-4 gap-2 sm:gap-4`}>
-                <StatCard label="IPs dédiées" value={stats.total} hint={`${stats.vms} VPS rattachés`} icon={<Icon.Globe size={18} />} />
-                <StatCard
+            {/* Metrics strip — cloud-console density */}
+            <div
+                css={tw`rounded-xl px-4 sm:px-6 py-4 grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6`}
+                style={{
+                    background: CloudUI.surface,
+                    border: `1px solid ${HMS.cardBorder}`,
+                }}
+            >
+                <Metric label="Préfixes" value={stats.total} hint={`${stats.vms} instance${stats.vms > 1 ? 's' : ''}`} />
+                <Metric
                     label="Reverse DNS"
                     value={stats.withPtr}
                     hint={stats.total ? `${Math.round((stats.withPtr / stats.total) * 100)} % configurés` : '—'}
-                    icon={<Icon.Type size={18} />}
                     tone="ok"
                 />
-                <StatCard
+                <Metric
                     label="Always-on"
                     value={stats.alwaysOn}
-                    hint="Filtre DDoS permanent"
-                    icon={<Icon.Shield size={18} />}
+                    hint="Mitigation permanente"
                     tone={stats.alwaysOn ? 'warn' : 'default'}
                 />
-                <StatCard
-                    label="Déjà attaquées"
+                <Metric
+                    label="Attaquées"
                     value={stats.hit}
-                    hint="Historique Packets Decreaser"
-                    icon={<Icon.Activity size={18} />}
+                    hint="Historique DDoS"
                     tone={stats.hit ? 'danger' : 'ok'}
                 />
             </div>
 
             <Panel padded={false}>
-                <div css={tw`px-4 sm:px-6 lg:px-8 pt-4 sm:pt-6 lg:pt-8 pb-4 sm:pb-5`}>
-                    <Toolbar>
-                        <div css={tw`flex flex-col gap-3 min-w-0 flex-1 w-full`}>
-                            <SearchField value={q} onChange={setQ} placeholder="IP, VPS ou PTR…" />
-                            <SegmentedControl value={ipFilter} onChange={setIpFilter} options={filterOptions} />
-                        </div>
-                        <p
-                            css={tw`text-xs sm:text-sm m-0 flex-shrink-0 text-center sm:text-left`}
-                            style={{ color: CloudUI.textMuted }}
-                        >
-                            {filtered.length} résultat{filtered.length > 1 ? 's' : ''}
-                        </p>
-                    </Toolbar>
+                <div
+                    css={tw`px-4 sm:px-6 py-4 sm:py-5 flex flex-col xl:flex-row xl:items-center gap-3 xl:gap-4`}
+                    style={{ borderBottom: `1px solid ${HMS.cardBorder}` }}
+                >
+                    <div css={tw`flex-1 min-w-0 xl:max-w-md`}>
+                        <SearchField value={q} onChange={setQ} placeholder="Rechercher une IP, un VPS ou un PTR…" />
+                    </div>
+                    <div css={tw`xl:flex-1 min-w-0`}>
+                        <SegmentedControl value={ipFilter} onChange={setIpFilter} options={filterOptions} />
+                    </div>
                 </div>
 
                 {filtered.length === 0 ? (
                     <EmptyState
                         icon={<Icon.Globe size={36} />}
-                        title="Aucune IP trouvée"
-                        description="Assigne une IP dédiée depuis l’onglet Réseau d’un VPS LumenVM."
+                        title="Aucune adresse IP"
+                        description={
+                            q || ipFilter !== 'all'
+                                ? 'Aucun résultat pour ces filtres. Modifiez la recherche ou réinitialisez les filtres.'
+                                : 'Assignez une IP dédiée depuis l’onglet Réseau d’une instance LumenVM.'
+                        }
                     />
                 ) : (
                     <>
                         <DataTable
                             headers={[
-                                { key: 'ip', label: 'Adresse IP', width: '22%' },
-                                { key: 'service', label: 'Instance', width: '16%' },
-                                { key: 'ptr', label: 'Reverse DNS', width: '22%' },
-                                { key: 'mode', label: 'Protection', width: '12%' },
-                                { key: 'attack', label: 'Attaque', width: '14%' },
-                                { key: 'actions', label: '', width: '14%', align: 'right' },
+                                { key: 'ip', label: 'Adresse IP', width: '24%' },
+                                { key: 'service', label: 'Instance', width: '18%' },
+                                { key: 'ptr', label: 'Reverse DNS', width: '24%' },
+                                { key: 'mode', label: 'Protection', width: '14%' },
+                                { key: 'attack', label: 'DDoS', width: '12%' },
+                                { key: 'actions', label: '', width: '8%', align: 'right' },
                             ]}
                         >
                             {filtered.map((row) => {
@@ -250,62 +336,61 @@ export default () => {
                                 const locked = !!modeByIp[row.ip]?.filter_mode_locked;
                                 const last = lastAttackByIp[row.ip];
                                 const ptr = row.reverse_dns.preferred || row.reverse_dns.live;
-                                const ddosLink = last
-                                    ? `/network/ddos?ip=${encodeURIComponent(row.ip)}&incident=${encodeURIComponent(last.incident_id)}`
-                                    : `/network/ddos?ip=${encodeURIComponent(row.ip)}`;
+                                const manageTo = `/network/ips/${encodeURIComponent(row.ip)}`;
 
                                 return (
-                                    <tr key={row.ip}>
+                                    <HoverRow key={row.ip}>
                                         <Td>
-                                            <div css={tw`flex items-center gap-2 min-w-0`}>
-                                                <MonoIp>{row.ip}</MonoIp>
-                                                <button
-                                                    type="button"
-                                                    title={copied === row.ip ? 'Copié' : 'Copier'}
-                                                    aria-label="Copier l’IP"
-                                                    onClick={() => onCopy(row.ip)}
-                                                    css={tw`inline-flex items-center justify-center rounded-md border-0 cursor-pointer flex-shrink-0`}
-                                                    style={{
-                                                        background: 'rgba(255,255,255,0.04)',
-                                                        color: CloudUI.textMuted,
-                                                        border: `1px solid ${HMS.cardBorder}`,
-                                                        width: 28,
-                                                        height: 28,
-                                                    }}
+                                            <div css={tw`flex items-center gap-2.5 min-w-0`}>
+                                                <Link
+                                                    to={manageTo}
+                                                    css={tw`no-underline min-w-0 truncate`}
+                                                    title={row.ip}
                                                 >
-                                                    {copied === row.ip ? <Icon.Check size={12} /> : <Icon.Copy size={12} />}
-                                                </button>
+                                                    <MonoIp>{row.ip}</MonoIp>
+                                                </Link>
+                                                <CopyIconButton
+                                                    value={row.ip}
+                                                    copied={copied === row.ip}
+                                                    onCopy={onCopy}
+                                                />
                                             </div>
-                                            {row.service.is_primary ? (
-                                                <div css={tw`mt-1.5`}>
-                                                    <Badge tone="accent">IP primaire</Badge>
-                                                </div>
-                                            ) : null}
+                                            <div css={tw`mt-1.5 flex flex-wrap items-center gap-1.5`}>
+                                                {row.service.is_primary ? (
+                                                    <Badge tone="accent">Primaire</Badge>
+                                                ) : null}
+                                                {!row.routed ? <Badge tone="neutral">Non routée</Badge> : null}
+                                            </div>
                                         </Td>
                                         <Td>
                                             <Link
                                                 to={`/server/${row.service.uuid}`}
                                                 css={tw`no-underline text-sm font-medium block truncate`}
-                                                style={{ color: CloudUI.accentHover }}
+                                                style={{ color: CloudUI.text }}
                                                 title={row.service.name}
                                             >
                                                 {row.service.name}
                                             </Link>
-                                            <MetaLine>{row.routed ? 'Routée vers le VPS' : 'Non routée'}</MetaLine>
+                                            <MetaLine>
+                                                {row.routed ? 'Routée vers l’instance' : 'Sans route active'}
+                                            </MetaLine>
                                         </Td>
                                         <Td>
                                             <p
                                                 css={tw`m-0 text-sm font-mono truncate`}
-                                                title={ptr || 'Non défini'}
-                                                style={{ color: ptr ? CloudUI.text : CloudUI.textMuted }}
+                                                title={ptr || undefined}
+                                                style={{
+                                                    color: ptr ? CloudUI.textSecondary : CloudUI.textMuted,
+                                                }}
                                             >
-                                                {ptr || 'Non défini'}
+                                                {ptr || '—'}
                                             </p>
                                         </Td>
                                         <Td>
-                                            <Badge tone={mode === 'always_on' ? 'warn' : 'neutral'}>
-                                                {mode === 'always_on' ? 'Always-on' : 'Dynamic'}
-                                            </Badge>
+                                            <StatusDot
+                                                tone={mode === 'always_on' ? 'warn' : 'ok'}
+                                                label={mode === 'always_on' ? 'Always-on' : 'Dynamic'}
+                                            />
                                             {locked ? (
                                                 <div css={tw`mt-1`}>
                                                     <Badge tone="danger">Verrouillé</Badge>
@@ -314,36 +399,28 @@ export default () => {
                                         </Td>
                                         <Td>
                                             {last ? (
-                                                <>
-                                                    <Badge tone={!last.incident_stop ? 'danger' : 'warn'}>
-                                                        {!last.incident_stop
-                                                            ? 'En cours'
-                                                            : last.attack_type || last.diversion_reason || 'Attaque'}
-                                                    </Badge>
-                                                    <MetaLine>
-                                                        {formatWhen(last.incident_start)}
-                                                        {last.max_bps_formattet ? ` · ${last.max_bps_formattet}` : ''}
-                                                    </MetaLine>
-                                                </>
+                                                <div>
+                                                    <StatusDot
+                                                        tone={!last.incident_stop ? 'danger' : 'warn'}
+                                                        label={!last.incident_stop ? 'En cours' : 'Historique'}
+                                                    />
+                                                    <MetaLine>{formatWhen(last.incident_start)}</MetaLine>
+                                                </div>
                                             ) : (
                                                 <span css={tw`text-sm`} style={{ color: CloudUI.textMuted }}>
-                                                    Aucune
+                                                    —
                                                 </span>
                                             )}
                                         </Td>
                                         <Td align="right">
                                             <div css={tw`flex justify-end`}>
-                                                <GhostLink
-                                                    compact
-                                                    to={`/network/ips/${encodeURIComponent(row.ip)}`}
-                                                    title="Gérer ce préfixe"
-                                                >
-                                                    <Icon.Sliders size={13} />
+                                                <GhostLink compact to={manageTo} title="Gérer ce préfixe">
                                                     Gérer
+                                                    <Icon.ChevronRight size={13} />
                                                 </GhostLink>
                                             </div>
                                         </Td>
-                                    </tr>
+                                    </HoverRow>
                                 );
                             })}
                         </DataTable>
@@ -354,49 +431,41 @@ export default () => {
                                 const locked = !!modeByIp[row.ip]?.filter_mode_locked;
                                 const last = lastAttackByIp[row.ip];
                                 const ptr = row.reverse_dns.preferred || row.reverse_dns.live;
-                                const ddosLink = last
-                                    ? `/network/ddos?ip=${encodeURIComponent(row.ip)}&incident=${encodeURIComponent(last.incident_id)}`
-                                    : `/network/ddos?ip=${encodeURIComponent(row.ip)}`;
+                                const manageTo = `/network/ips/${encodeURIComponent(row.ip)}`;
 
                                 return (
                                     <MobileCard key={row.ip}>
                                         <div css={tw`flex items-start justify-between gap-3`}>
                                             <div css={tw`min-w-0 flex-1`}>
-                                                <div css={tw`flex items-center gap-2 flex-wrap`}>
+                                                <div css={tw`flex items-center gap-2`}>
                                                     <MonoIp>{row.ip}</MonoIp>
-                                                    <button
-                                                        type="button"
-                                                        aria-label="Copier l’IP"
-                                                        onClick={() => onCopy(row.ip)}
-                                                        css={tw`inline-flex items-center justify-center rounded-md border-0 cursor-pointer flex-shrink-0`}
-                                                        style={{
-                                                            background: 'rgba(255,255,255,0.04)',
-                                                            color: CloudUI.textMuted,
-                                                            border: `1px solid ${HMS.cardBorder}`,
-                                                            width: 36,
-                                                            height: 36,
-                                                        }}
-                                                    >
-                                                        {copied === row.ip ? <Icon.Check size={14} /> : <Icon.Copy size={14} />}
-                                                    </button>
+                                                    <CopyIconButton
+                                                        value={row.ip}
+                                                        copied={copied === row.ip}
+                                                        onCopy={onCopy}
+                                                        size={32}
+                                                    />
                                                 </div>
                                                 <Link
                                                     to={`/server/${row.service.uuid}`}
                                                     css={tw`inline-flex items-center gap-1 text-sm no-underline mt-2 font-medium`}
-                                                    style={{ color: CloudUI.accentHover }}
+                                                    style={{ color: CloudUI.text }}
                                                 >
                                                     {row.service.name}
                                                     <Icon.ChevronRight size={14} />
                                                 </Link>
                                             </div>
-                                            <Badge tone={mode === 'always_on' ? 'warn' : 'neutral'}>
-                                                {mode === 'always_on' ? 'Always-on' : 'Dynamic'}
-                                            </Badge>
+                                            <StatusDot
+                                                tone={mode === 'always_on' ? 'warn' : 'ok'}
+                                                label={mode === 'always_on' ? 'Always-on' : 'Dynamic'}
+                                            />
                                         </div>
 
                                         {(row.service.is_primary || locked || !row.routed) && (
                                             <div css={tw`flex flex-wrap gap-2`}>
-                                                {row.service.is_primary ? <Badge tone="accent">IP primaire</Badge> : null}
+                                                {row.service.is_primary ? (
+                                                    <Badge tone="accent">Primaire</Badge>
+                                                ) : null}
                                                 {locked ? <Badge tone="danger">Verrouillé</Badge> : null}
                                                 {!row.routed ? <Badge tone="neutral">Non routée</Badge> : null}
                                             </div>
@@ -409,40 +478,35 @@ export default () => {
                                                     value: (
                                                         <span
                                                             css={tw`font-mono text-xs break-all`}
-                                                            style={{ color: ptr ? CloudUI.text : CloudUI.textMuted }}
+                                                            style={{
+                                                                color: ptr ? CloudUI.text : CloudUI.textMuted,
+                                                            }}
                                                         >
-                                                            {ptr || 'Non défini'}
+                                                            {ptr || '—'}
                                                         </span>
                                                     ),
                                                 },
                                                 {
-                                                    label: 'Attaque',
+                                                    label: 'DDoS',
                                                     value: last ? (
                                                         <span>
                                                             {!last.incident_stop ? (
-                                                                <span style={{ color: CloudUI.danger }}>En cours · </span>
-                                                            ) : null}
-                                                            {formatWhen(last.incident_start)}
-                                                            {last.max_bps_formattet ? (
-                                                                <span css={tw`block mt-1`} style={{ color: CloudUI.textMuted }}>
-                                                                    {last.max_bps_formattet}
+                                                                <span style={{ color: CloudUI.danger }}>
+                                                                    En cours ·{' '}
                                                                 </span>
                                                             ) : null}
+                                                            {formatWhen(last.incident_start)}
                                                         </span>
                                                     ) : (
-                                                        'Aucune'
+                                                        '—'
                                                     ),
                                                 },
                                             ]}
                                         />
 
-                                        <GhostLink
-                                            fullWidth
-                                            to={`/network/ips/${encodeURIComponent(row.ip)}`}
-                                            title="Gérer ce préfixe"
-                                        >
-                                            <Icon.Sliders size={14} />
+                                        <GhostLink fullWidth to={manageTo} title="Gérer ce préfixe">
                                             Gérer ce préfixe
+                                            <Icon.ChevronRight size={14} />
                                         </GhostLink>
                                     </MobileCard>
                                 );
@@ -451,50 +515,6 @@ export default () => {
                     </>
                 )}
             </Panel>
-
-            <HmsModal visible={!!editing} onClose={() => setEditing(null)}>
-                {editing ? (
-                    <div css={tw`p-5 sm:p-8 space-y-5`}>
-                        <div>
-                            <h3 css={tw`text-xl font-semibold m-0 pr-8`} style={{ color: CloudUI.text }}>
-                                Reverse DNS
-                            </h3>
-                            <p css={tw`text-sm m-0 mt-2`} style={{ color: CloudUI.textMuted }}>
-                                Adresse IP{' '}
-                                <code style={{ fontFamily: CloudUI.fontMono, color: CloudUI.text }}>{editing.ip}</code>
-                            </p>
-                        </div>
-                        <label css={tw`block text-sm`} style={{ color: CloudUI.textSecondary }}>
-                            Hostname
-                            <input
-                                value={hostname}
-                                onChange={(e) => setHostname(e.target.value)}
-                                placeholder="vps.exemple.com"
-                                autoCapitalize="none"
-                                autoCorrect="off"
-                                spellCheck={false}
-                                inputMode="url"
-                                css={tw`mt-2 w-full rounded-xl px-4 py-3 outline-none text-base`}
-                                style={{
-                                    background: HMS.inputBg,
-                                    color: HMS.text,
-                                    border: `1px solid ${HMS.cardBorder}`,
-                                    minHeight: 48,
-                                }}
-                            />
-                        </label>
-                        <p css={tw`text-sm m-0 leading-relaxed`} style={{ color: CloudUI.textMuted }}>
-                            Par défaut : vps-XX.1vps.cc. Laisse vide pour rétablir ce PTR.
-                        </p>
-                        <div css={tw`flex flex-col-reverse sm:flex-row sm:justify-end gap-2 sm:gap-3 pt-2`}>
-                            <GhostButton onClick={() => setEditing(null)}>Annuler</GhostButton>
-                            <PrimaryButton onClick={saveRdns} disabled={saving}>
-                                {saving ? 'Enregistrement…' : 'Enregistrer'}
-                            </PrimaryButton>
-                        </div>
-                    </div>
-                ) : null}
-            </HmsModal>
         </NetworkPage>
     );
 };
