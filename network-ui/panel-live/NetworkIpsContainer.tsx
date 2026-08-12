@@ -237,12 +237,12 @@ export default () => {
                     <>
                         <DataTable
                             headers={[
-                                { key: 'ip', label: 'Adresse IP', width: '18%' },
-                                { key: 'service', label: 'Instance', width: '14%' },
-                                { key: 'ptr', label: 'Reverse DNS', width: '20%' },
+                                { key: 'ip', label: 'Adresse IP', width: '22%' },
+                                { key: 'service', label: 'Instance', width: '16%' },
+                                { key: 'ptr', label: 'Reverse DNS', width: '22%' },
                                 { key: 'mode', label: 'Protection', width: '12%' },
                                 { key: 'attack', label: 'Attaque', width: '14%' },
-                                { key: 'actions', label: 'Actions', width: '22%', align: 'right' },
+                                { key: 'actions', label: '', width: '14%', align: 'right' },
                             ]}
                         >
                             {filtered.map((row) => {
@@ -257,10 +257,8 @@ export default () => {
                                 return (
                                     <tr key={row.ip}>
                                         <Td>
-                                            <div css={tw`flex items-center gap-1.5 min-w-0`}>
-                                                <span css={tw`min-w-0 truncate`}>
-                                                    <MonoIp>{row.ip}</MonoIp>
-                                                </span>
+                                            <div css={tw`flex items-center gap-2 min-w-0`}>
+                                                <MonoIp>{row.ip}</MonoIp>
                                                 <button
                                                     type="button"
                                                     title={copied === row.ip ? 'Copié' : 'Copier'}
@@ -279,7 +277,7 @@ export default () => {
                                                 </button>
                                             </div>
                                             {row.service.is_primary ? (
-                                                <div css={tw`mt-1`}>
+                                                <div css={tw`mt-1.5`}>
                                                     <Badge tone="accent">IP primaire</Badge>
                                                 </div>
                                             ) : null}
@@ -287,8 +285,9 @@ export default () => {
                                         <Td>
                                             <Link
                                                 to={`/server/${row.service.uuid}`}
-                                                css={tw`no-underline text-sm font-medium`}
+                                                css={tw`no-underline text-sm font-medium block truncate`}
                                                 style={{ color: CloudUI.accentHover }}
+                                                title={row.service.name}
                                             >
                                                 {row.service.name}
                                             </Link>
@@ -333,14 +332,16 @@ export default () => {
                                             )}
                                         </Td>
                                         <Td align="right">
-                                            <GhostLink
-                                                compact
-                                                to={`/network/ips/${encodeURIComponent(row.ip)}`}
-                                                title="Gérer ce préfixe"
-                                            >
-                                                <Icon.Sliders size={13} />
-                                                Gérer ce préfixe
-                                            </GhostLink>
+                                            <div css={tw`flex justify-end`}>
+                                                <GhostLink
+                                                    compact
+                                                    to={`/network/ips/${encodeURIComponent(row.ip)}`}
+                                                    title="Gérer ce préfixe"
+                                                >
+                                                    <Icon.Sliders size={13} />
+                                                    Gérer
+                                                </GhostLink>
+                                            </div>
                                         </Td>
                                     </tr>
                                 );

@@ -185,17 +185,15 @@ export const Badge = ({
 };
 
 const digiOutlineIdle: React.CSSProperties = {
-    background: 'rgba(255,255,255,0.035)',
+    background: 'rgba(255,255,255,0.04)',
     color: CloudUI.textSecondary,
     border: `1px solid ${HMS.cardBorder}`,
-    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)',
 };
 
 const digiOutlineHover: React.CSSProperties = {
     background: CloudUI.accentMuted,
     color: CloudUI.accentHover,
-    border: '1px solid rgba(16,185,129,0.38)',
-    boxShadow: '0 0 0 1px rgba(16,185,129,0.08), inset 0 1px 0 rgba(255,255,255,0.04)',
+    border: '1px solid rgba(16,185,129,0.35)',
 };
 
 /** Bouton outline Digi (Modifier PTR, Gérer, etc.) — hover emerald signature. */
@@ -258,13 +256,13 @@ export const GhostLink = ({
             onMouseEnter={() => setHover(true)}
             onMouseLeave={() => setHover(false)}
             css={[
-                tw`inline-flex items-center justify-center gap-2 rounded-lg font-medium no-underline transition-all whitespace-nowrap`,
+                tw`inline-flex items-center justify-center gap-1.5 rounded-lg font-medium no-underline transition-colors whitespace-nowrap flex-shrink-0`,
                 compact ? tw`px-2.5 py-1.5 text-xs` : tw`px-3 py-2.5 text-sm`,
                 fullWidth ? tw`w-full` : tw``,
             ]}
             style={{
                 ...(hover ? digiOutlineHover : digiOutlineIdle),
-                minHeight: compact ? 34 : 44,
+                minHeight: compact ? 32 : 44,
             }}
         >
             {children}
@@ -632,8 +630,8 @@ export const ActionsMenu = ({ items, label = 'Gérer', fullWidth }: { items: Act
 
 const thStyle: React.CSSProperties = {
     textAlign: 'left',
-    padding: '12px 10px',
-    fontSize: '0.68rem',
+    padding: '14px 16px',
+    fontSize: '0.7rem',
     fontWeight: 650,
     letterSpacing: '0.06em',
     textTransform: 'uppercase',
@@ -644,10 +642,9 @@ const thStyle: React.CSSProperties = {
 };
 
 const tdStyle: React.CSSProperties = {
-    padding: '14px 10px',
+    padding: '16px',
     borderBottom: `1px solid ${HMS.cardBorder}`,
     verticalAlign: 'middle',
-    overflow: 'hidden',
 };
 
 export const DataTable = ({
@@ -657,8 +654,11 @@ export const DataTable = ({
     headers: { key: string; label: string; align?: 'left' | 'right'; width?: string }[];
     children: React.ReactNode;
 }) => (
-    <div css={tw`hidden lg:block w-full overflow-hidden`}>
-        <table css={tw`w-full`} style={{ borderCollapse: 'collapse', tableLayout: 'fixed', width: '100%' }}>
+    <div css={tw`hidden lg:block w-full min-w-0`}>
+        <table
+            css={tw`w-full`}
+            style={{ borderCollapse: 'collapse', tableLayout: 'fixed', width: '100%' }}
+        >
             <thead>
                 <tr>
                     {headers.map((h) => (
@@ -703,8 +703,9 @@ export const Td = ({
 
 export const MonoIp = ({ children }: { children: React.ReactNode }) => (
     <code
-        css={tw`text-sm sm:text-base font-semibold tracking-tight`}
+        css={tw`text-sm font-semibold tracking-tight truncate inline-block max-w-full align-bottom`}
         style={{ color: CloudUI.text, fontFamily: CloudUI.fontMono }}
+        title={typeof children === 'string' ? children : undefined}
     >
         {children}
     </code>
