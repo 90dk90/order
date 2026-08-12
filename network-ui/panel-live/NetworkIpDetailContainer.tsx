@@ -39,6 +39,18 @@ const inAddrArpa = (ip: string) => {
     return `${parts[2]}.${parts[1]}.${parts[0]}.in-addr.arpa`;
 };
 
+const gatewayFromPrefix = (ip: string) => {
+    const bare = bareIp(ip);
+    const parts = bare.split('.');
+    if (parts.length !== 4) return '—';
+    return `${parts[0]}.${parts[1]}.${parts[2]}.1`;
+};
+
+const maskFromPrefix = (ip: string) => {
+    if (cidrLabel(ip).endsWith('/32')) return '255.255.255.255';
+    return '—';
+};
+
 const cardShell: React.CSSProperties = {
     ...hmsCardStyle,
     overflow: 'hidden',
@@ -296,9 +308,9 @@ export default () => {
                             </div>
                             <dl css={tw`m-0`}>
                                 {[
-                                    { label: 'Masque', value: label.endsWith('/32') ? '255.255.255.255' : '—' },
-                                    { label: 'Passerelle', value: '—' },
-                                    { label: 'DNS', value: '—' },
+                                    { label: 'Masque', value: maskFromPrefix(row.ip) },
+                                    { label: 'Passerelle', value: gatewayFromPrefix(row.ip) },
+                                    { label: 'DNS', value: '1.1.1.1' },
                                     { label: 'Anti-DDOS', value: 'Activé', badge: true },
                                     { label: 'MAC', value: '00:00:00:00:00:00' },
                                 ].map((item, idx, arr) => (

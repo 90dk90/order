@@ -236,12 +236,12 @@ export default () => {
                     <>
                         <DataTable
                             headers={[
-                                { key: 'ip', label: 'Adresse IP', width: '20%' },
-                                { key: 'service', label: 'Instance', width: '16%' },
-                                { key: 'ptr', label: 'Reverse DNS', width: '24%' },
+                                { key: 'ip', label: 'Adresse IP', width: '18%' },
+                                { key: 'service', label: 'Instance', width: '14%' },
+                                { key: 'ptr', label: 'Reverse DNS', width: '20%' },
                                 { key: 'mode', label: 'Protection', width: '12%' },
-                                { key: 'attack', label: 'Dernière attaque', width: '16%' },
-                                { key: 'actions', label: 'Actions', width: '10%', align: 'right' },
+                                { key: 'attack', label: 'Attaque', width: '14%' },
+                                { key: 'actions', label: 'Actions', width: '22%', align: 'right' },
                             ]}
                         >
                             {filtered.map((row) => {
@@ -256,24 +256,32 @@ export default () => {
                                 return (
                                     <tr key={row.ip}>
                                         <Td>
-                                            <div css={tw`flex items-center gap-2 flex-wrap`}>
-                                                <MonoIp>{row.ip}</MonoIp>
+                                            <div css={tw`flex items-center gap-1.5 min-w-0`}>
+                                                <span css={tw`min-w-0 truncate`}>
+                                                    <MonoIp>{row.ip}</MonoIp>
+                                                </span>
                                                 <button
                                                     type="button"
-                                                    title="Copier"
+                                                    title={copied === row.ip ? 'Copié' : 'Copier'}
+                                                    aria-label="Copier l’IP"
                                                     onClick={() => onCopy(row.ip)}
-                                                    css={tw`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs border-0 cursor-pointer`}
+                                                    css={tw`inline-flex items-center justify-center rounded-md border-0 cursor-pointer flex-shrink-0`}
                                                     style={{
                                                         background: 'rgba(255,255,255,0.04)',
                                                         color: CloudUI.textMuted,
                                                         border: `1px solid ${HMS.cardBorder}`,
+                                                        width: 28,
+                                                        height: 28,
                                                     }}
                                                 >
                                                     {copied === row.ip ? <Icon.Check size={12} /> : <Icon.Copy size={12} />}
-                                                    {copied === row.ip ? 'Copié' : 'Copier'}
                                                 </button>
-                                                {row.service.is_primary ? <Badge tone="accent">IP primaire</Badge> : null}
                                             </div>
+                                            {row.service.is_primary ? (
+                                                <div css={tw`mt-1`}>
+                                                    <Badge tone="accent">IP primaire</Badge>
+                                                </div>
+                                            ) : null}
                                         </Td>
                                         <Td>
                                             <Link
@@ -287,7 +295,8 @@ export default () => {
                                         </Td>
                                         <Td>
                                             <p
-                                                css={tw`m-0 text-sm font-mono break-all`}
+                                                css={tw`m-0 text-sm font-mono truncate`}
+                                                title={ptr || 'Non défini'}
                                                 style={{ color: ptr ? CloudUI.text : CloudUI.textMuted }}
                                             >
                                                 {ptr || 'Non défini'}
@@ -325,11 +334,11 @@ export default () => {
                                         <Td align="right">
                                             <Link
                                                 to={`/network/ips/${encodeURIComponent(row.ip)}`}
-                                                css={tw`inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium no-underline whitespace-nowrap`}
+                                                css={tw`inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-semibold no-underline whitespace-nowrap max-w-full`}
                                                 style={{
                                                     background: CloudUI.accent,
                                                     color: '#fff',
-                                                    minHeight: 40,
+                                                    minHeight: 34,
                                                 }}
                                             >
                                                 Gérer ce préfixe
