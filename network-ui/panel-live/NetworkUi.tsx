@@ -184,33 +184,93 @@ export const Badge = ({
     );
 };
 
+const digiOutlineIdle: React.CSSProperties = {
+    background: 'rgba(255,255,255,0.035)',
+    color: CloudUI.textSecondary,
+    border: `1px solid ${HMS.cardBorder}`,
+    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)',
+};
+
+const digiOutlineHover: React.CSSProperties = {
+    background: CloudUI.accentMuted,
+    color: CloudUI.accentHover,
+    border: '1px solid rgba(16,185,129,0.38)',
+    boxShadow: '0 0 0 1px rgba(16,185,129,0.08), inset 0 1px 0 rgba(255,255,255,0.04)',
+};
+
+/** Bouton outline Digi (Modifier PTR, Gérer, etc.) — hover emerald signature. */
 export const GhostButton = ({
     children,
     onClick,
     disabled,
     title,
+    compact,
 }: {
     children: React.ReactNode;
     onClick?: () => void;
     disabled?: boolean;
     title?: string;
-}) => (
-    <button
-        type="button"
-        title={title}
-        disabled={disabled}
-        onClick={onClick}
-        css={tw`w-full sm:w-auto inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium border-0 cursor-pointer transition-colors disabled:opacity-50 whitespace-nowrap`}
-        style={{
-            background: 'rgba(255,255,255,0.04)',
-            color: CloudUI.textSecondary,
-            border: `1px solid ${HMS.cardBorder}`,
-            minHeight: 44,
-        }}
-    >
-        {children}
-    </button>
-);
+    compact?: boolean;
+}) => {
+    const [hover, setHover] = useState(false);
+    const active = hover && !disabled;
+    return (
+        <button
+            type="button"
+            title={title}
+            disabled={disabled}
+            onClick={onClick}
+            onMouseEnter={() => setHover(true)}
+            onMouseLeave={() => setHover(false)}
+            css={[
+                tw`inline-flex items-center justify-center gap-2 rounded-lg font-medium border-0 cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap`,
+                compact ? tw`px-2.5 py-1.5 text-xs` : tw`w-full sm:w-auto px-3 py-2.5 text-sm`,
+            ]}
+            style={{
+                ...(active ? digiOutlineHover : digiOutlineIdle),
+                minHeight: compact ? 34 : 44,
+            }}
+        >
+            {children}
+        </button>
+    );
+};
+
+/** Lien outline Digi — même langage que GhostButton (ex. Gérer ce préfixe). */
+export const GhostLink = ({
+    to,
+    children,
+    compact,
+    title,
+    fullWidth,
+}: {
+    to: string;
+    children: React.ReactNode;
+    compact?: boolean;
+    title?: string;
+    fullWidth?: boolean;
+}) => {
+    const [hover, setHover] = useState(false);
+    return (
+        <Link
+            to={to}
+            title={title}
+            onMouseEnter={() => setHover(true)}
+            onMouseLeave={() => setHover(false)}
+            css={[
+                tw`inline-flex items-center justify-center gap-2 rounded-lg font-medium no-underline transition-all whitespace-nowrap`,
+                compact ? tw`px-2.5 py-1.5 text-xs` : tw`px-3 py-2.5 text-sm`,
+                fullWidth ? tw`w-full` : tw``,
+            ]}
+            style={{
+                ...(hover ? digiOutlineHover : digiOutlineIdle),
+                minHeight: compact ? 34 : 44,
+            }}
+        >
+            {children}
+        </Link>
+    );
+};
 
 export const PrimaryButton = ({
     children,

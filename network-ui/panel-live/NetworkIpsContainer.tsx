@@ -24,6 +24,7 @@ import {
     DataTable,
     EmptyState,
     GhostButton,
+    GhostLink,
     MetaLine,
     MobileCard,
     MobileMetaGrid,
@@ -332,17 +333,14 @@ export default () => {
                                             )}
                                         </Td>
                                         <Td align="right">
-                                            <Link
+                                            <GhostLink
+                                                compact
                                                 to={`/network/ips/${encodeURIComponent(row.ip)}`}
-                                                css={tw`inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-semibold no-underline whitespace-nowrap max-w-full`}
-                                                style={{
-                                                    background: CloudUI.accent,
-                                                    color: '#fff',
-                                                    minHeight: 34,
-                                                }}
+                                                title="Gérer ce préfixe"
                                             >
+                                                <Icon.Sliders size={13} />
                                                 Gérer ce préfixe
-                                            </Link>
+                                            </GhostLink>
                                         </Td>
                                     </tr>
                                 );
@@ -437,17 +435,14 @@ export default () => {
                                             ]}
                                         />
 
-                                        <Link
+                                        <GhostLink
+                                            fullWidth
                                             to={`/network/ips/${encodeURIComponent(row.ip)}`}
-                                            css={tw`w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium no-underline`}
-                                            style={{
-                                                background: CloudUI.accent,
-                                                color: '#fff',
-                                                minHeight: 44,
-                                            }}
+                                            title="Gérer ce préfixe"
                                         >
+                                            <Icon.Sliders size={14} />
                                             Gérer ce préfixe
-                                        </Link>
+                                        </GhostLink>
                                     </MobileCard>
                                 );
                             })}

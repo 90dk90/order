@@ -281,14 +281,14 @@ export default () => {
                                 </div>
                             </div>
                             <div css={tw`flex flex-wrap items-center gap-2 flex-shrink-0`}>
-                                <GhostButton onClick={onCopy}>
-                                    {copied ? <Icon.Check size={14} /> : <Icon.Copy size={14} />}
+                                <GhostButton compact onClick={onCopy}>
+                                    {copied ? <Icon.Check size={13} /> : <Icon.Copy size={13} />}
                                     {copied ? 'Copié' : 'Copier'}
                                 </GhostButton>
-                                <PrimaryButton onClick={() => history.push('/network/ips')}>
-                                    <Icon.ArrowLeft size={14} />
+                                <GhostButton compact onClick={() => history.push('/network/ips')}>
+                                    <Icon.ArrowLeft size={13} />
                                     Retour aux IPs
-                                </PrimaryButton>
+                                </GhostButton>
                             </div>
                         </div>
                     </div>
@@ -397,9 +397,9 @@ export default () => {
                                                 {row.service.name}
                                             </p>
                                         </div>
-                                        <GhostButton onClick={() => history.push(`/server/${row.service.uuid}`)}>
+                                        <GhostButton compact onClick={() => history.push(`/server/${row.service.uuid}`)}>
                                             Ouvrir le service
-                                            <Icon.ExternalLink size={13} />
+                                            <Icon.ExternalLink size={12} />
                                         </GhostButton>
                                     </div>
                                     <div css={tw`px-4 py-3`}>
@@ -531,7 +531,7 @@ export default () => {
                                                 )}
                                             </td>
                                             <td css={tw`px-5 py-4 text-right`}>
-                                                <GhostButton onClick={openEdit}>
+                                                <GhostButton compact onClick={openEdit}>
                                                     <Icon.Edit3 size={13} />
                                                     Modifier
                                                 </GhostButton>
