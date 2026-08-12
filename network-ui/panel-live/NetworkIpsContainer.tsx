@@ -20,7 +20,6 @@ import {
     updateNetworkRdns,
 } from '@/api/network';
 import {
-    ActionsMenu,
     Badge,
     DataTable,
     EmptyState,
@@ -324,53 +323,17 @@ export default () => {
                                             )}
                                         </Td>
                                         <Td align="right">
-                                            <div css={tw`inline-flex items-center justify-end gap-2`}>
-                                                <Link
-                                                    to={`/network/ips/${encodeURIComponent(row.ip)}`}
-                                                    css={tw`inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium no-underline whitespace-nowrap`}
-                                                    style={{
-                                                        background: CloudUI.accent,
-                                                        color: '#fff',
-                                                        minHeight: 44,
-                                                    }}
-                                                >
-                                                    <Icon.Settings size={14} />
-                                                    Gérer ce préfixe
-                                                </Link>
-                                                <ActionsMenu
-                                                    label="Plus"
-                                                    items={[
-                                                        {
-                                                            key: 'ptr',
-                                                            label: 'Reverse DNS',
-                                                            icon: <Icon.Edit3 size={14} />,
-                                                            onClick: () => openEdit(row),
-                                                        },
-                                                        {
-                                                            key: 'mode',
-                                                            label:
-                                                                mode === 'always_on'
-                                                                    ? 'Passer en Dynamic'
-                                                                    : 'Passer en Always-on',
-                                                            icon: <Icon.Shield size={14} />,
-                                                            disabled: locked || busyIp === row.ip,
-                                                            onClick: () => toggleMode(row.ip, mode),
-                                                        },
-                                                        {
-                                                            key: 'ddos',
-                                                            label: last ? 'Voir l’attaque' : 'Historique DDoS',
-                                                            icon: <Icon.Activity size={14} />,
-                                                            href: ddosLink,
-                                                        },
-                                                        {
-                                                            key: 'vm',
-                                                            label: 'Réseau du VPS',
-                                                            icon: <Icon.Share2 size={14} />,
-                                                            href: `/server/${row.service.uuid}/network`,
-                                                        },
-                                                    ]}
-                                                />
-                                            </div>
+                                            <Link
+                                                to={`/network/ips/${encodeURIComponent(row.ip)}`}
+                                                css={tw`inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium no-underline whitespace-nowrap`}
+                                                style={{
+                                                    background: CloudUI.accent,
+                                                    color: '#fff',
+                                                    minHeight: 40,
+                                                }}
+                                            >
+                                                Gérer ce préfixe
+                                            </Link>
                                         </Td>
                                     </tr>
                                 );
@@ -465,54 +428,17 @@ export default () => {
                                             ]}
                                         />
 
-                                        <div css={tw`space-y-2`}>
-                                            <Link
-                                                to={`/network/ips/${encodeURIComponent(row.ip)}`}
-                                                css={tw`w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium no-underline`}
-                                                style={{
-                                                    background: CloudUI.accent,
-                                                    color: '#fff',
-                                                    minHeight: 44,
-                                                }}
-                                            >
-                                                <Icon.Settings size={14} />
-                                                Gérer ce préfixe
-                                            </Link>
-                                            <ActionsMenu
-                                                fullWidth
-                                                label="Plus d’actions"
-                                                items={[
-                                                    {
-                                                        key: 'ptr',
-                                                        label: 'Reverse DNS',
-                                                        icon: <Icon.Edit3 size={14} />,
-                                                        onClick: () => openEdit(row),
-                                                    },
-                                                    {
-                                                        key: 'mode',
-                                                        label:
-                                                            mode === 'always_on'
-                                                                ? 'Passer en Dynamic'
-                                                                : 'Passer en Always-on',
-                                                        icon: <Icon.Shield size={14} />,
-                                                        disabled: locked || busyIp === row.ip,
-                                                        onClick: () => toggleMode(row.ip, mode),
-                                                    },
-                                                    {
-                                                        key: 'ddos',
-                                                        label: last ? 'Voir l’attaque' : 'Historique DDoS',
-                                                        icon: <Icon.Activity size={14} />,
-                                                        href: ddosLink,
-                                                    },
-                                                    {
-                                                        key: 'vm',
-                                                        label: 'Réseau du VPS',
-                                                        icon: <Icon.Share2 size={14} />,
-                                                        href: `/server/${row.service.uuid}/network`,
-                                                    },
-                                                ]}
-                                            />
-                                        </div>
+                                        <Link
+                                            to={`/network/ips/${encodeURIComponent(row.ip)}`}
+                                            css={tw`w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium no-underline`}
+                                            style={{
+                                                background: CloudUI.accent,
+                                                color: '#fff',
+                                                minHeight: 44,
+                                            }}
+                                        >
+                                            Gérer ce préfixe
+                                        </Link>
                                     </MobileCard>
                                 );
                             })}
