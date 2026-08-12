@@ -900,40 +900,142 @@ export default () => {
                 </Panel>
             ) : null}
 
-            <HmsModal visible={editOpen} onClose={() => setEditOpen(false)}>
-                <div css={tw`p-5 sm:p-8 space-y-5`}>
-                    <div>
-                        <h3 css={tw`text-xl font-semibold m-0 pr-8`} style={{ color: CloudUI.text }}>
-                            Modifier le PTR / Reverse DNS
-                        </h3>
-                        <p css={tw`text-sm m-0 mt-2`} style={{ color: CloudUI.textMuted }}>
-                            Adresse IP{' '}
-                            <code style={{ fontFamily: CloudUI.fontMono, color: CloudUI.text }}>{row.ip}</code>
-                        </p>
-                    </div>
-                    <label css={tw`block text-sm`} style={{ color: CloudUI.textSecondary }}>
-                        Hostname
-                        <input
-                            value={hostname}
-                            onChange={(e) => setHostname(e.target.value)}
-                            placeholder="vps.exemple.com"
-                            autoCapitalize="none"
-                            autoCorrect="off"
-                            spellCheck={false}
-                            inputMode="url"
-                            css={tw`mt-2 w-full rounded-xl px-4 py-3 outline-none text-base`}
+            <HmsModal visible={editOpen} onClose={() => setEditOpen(false)} maxWidth="28rem">
+                <div css={tw`p-5 sm:p-6`}>
+                    <div css={tw`flex items-start gap-3.5 pr-8`}>
+                        <div
+                            css={tw`w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0`}
                             style={{
-                                background: HMS.inputBg,
-                                color: HMS.text,
-                                border: `1px solid ${HMS.cardBorder}`,
-                                minHeight: 48,
+                                background: 'rgba(245,158,11,0.14)',
+                                color: CloudUI.warning,
+                                border: '1px solid rgba(245,158,11,0.28)',
                             }}
-                        />
-                    </label>
-                    <p css={tw`text-sm m-0 leading-relaxed`} style={{ color: CloudUI.textMuted }}>
-                        Par défaut : vps-XX.1vps.cc. Laisse vide pour rétablir ce PTR.
-                    </p>
-                    <div css={tw`flex flex-col-reverse sm:flex-row sm:justify-end gap-2 sm:gap-3 pt-2`}>
+                        >
+                            <Icon.AlertTriangle size={20} strokeWidth={1.75} />
+                        </div>
+                        <div css={tw`min-w-0 pt-0.5`}>
+                            <h3
+                                css={tw`text-base sm:text-lg font-semibold m-0 tracking-tight`}
+                                style={{ color: CloudUI.text }}
+                            >
+                                Modifier le PTR / Reverse DNS
+                            </h3>
+                            <p css={tw`text-sm m-0 mt-1.5 leading-relaxed`} style={{ color: CloudUI.textMuted }}>
+                                Mettez à jour le PTR de cette IP. Cette action impacte directement la résolution
+                                reverse DNS.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div css={tw`mt-5 space-y-4`}>
+                        <div
+                            css={tw`rounded-xl px-3.5 py-3 text-xs leading-relaxed`}
+                            style={{
+                                background: 'rgba(245,158,11,0.08)',
+                                border: '1px solid rgba(245,158,11,0.22)',
+                                color: '#fbbf24',
+                            }}
+                        >
+                            Utilisez un FQDN valide (ex.&nbsp;: <span css={tw`font-mono`}>host.example.com</span>).
+                            Une mauvaise valeur peut perturber la délivrabilité mail et certains contrôles réseau.
+                        </div>
+
+                        <div
+                            css={tw`rounded-xl px-4 py-3.5 space-y-3`}
+                            style={{
+                                background: 'rgba(255,255,255,0.02)',
+                                border: `1px solid ${HMS.cardBorder}`,
+                            }}
+                        >
+                            <div css={tw`flex items-start justify-between gap-3`}>
+                                <div css={tw`min-w-0`}>
+                                    <p
+                                        css={tw`m-0 text-[11px] font-semibold uppercase tracking-wider`}
+                                        style={{ color: CloudUI.textMuted, letterSpacing: '0.12em' }}
+                                    >
+                                        Adresse IP
+                                    </p>
+                                    <p
+                                        css={tw`m-0 mt-1 font-mono text-sm font-medium truncate`}
+                                        style={{ color: CloudUI.text }}
+                                    >
+                                        {ipBare}
+                                    </p>
+                                </div>
+                                <CopyIconButton
+                                    value={ipBare}
+                                    copied={copied === ipBare}
+                                    onCopy={onCopy}
+                                />
+                            </div>
+                            <div
+                                css={tw`pt-3`}
+                                style={{ borderTop: `1px solid ${HMS.cardBorder}` }}
+                            >
+                                <p
+                                    css={tw`m-0 text-[11px] font-semibold uppercase tracking-wider`}
+                                    style={{ color: CloudUI.textMuted, letterSpacing: '0.12em' }}
+                                >
+                                    PTR actuel
+                                </p>
+                                <p
+                                    css={tw`m-0 mt-1 font-mono text-sm break-all`}
+                                    style={{ color: ptr ? CloudUI.textSecondary : CloudUI.textMuted }}
+                                >
+                                    {ptr || 'Non défini'}
+                                </p>
+                            </div>
+                        </div>
+
+                        <label css={tw`block`} htmlFor="ptr-target">
+                            <span
+                                css={tw`block text-sm font-medium mb-2`}
+                                style={{ color: CloudUI.textSecondary }}
+                            >
+                                Nom d&apos;hôte cible (FQDN)
+                            </span>
+                            <input
+                                id="ptr-target"
+                                value={hostname}
+                                onChange={(e) => setHostname(e.target.value)}
+                                placeholder="ex: srv01.example.com"
+                                autoCapitalize="none"
+                                autoCorrect="off"
+                                spellCheck={false}
+                                inputMode="url"
+                                autoFocus
+                                css={tw`w-full rounded-xl px-3.5 py-3 outline-none text-sm transition-shadow`}
+                                style={{
+                                    background: HMS.inputBg,
+                                    color: CloudUI.text,
+                                    border: `1px solid ${HMS.cardBorder}`,
+                                    minHeight: 46,
+                                    fontFamily: CloudUI.fontMono,
+                                    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.02)',
+                                }}
+                                onFocus={(e) => {
+                                    e.currentTarget.style.borderColor = 'rgba(16,185,129,0.55)';
+                                    e.currentTarget.style.boxShadow = '0 0 0 3px rgba(16,185,129,0.16)';
+                                }}
+                                onBlur={(e) => {
+                                    e.currentTarget.style.borderColor = HMS.cardBorder;
+                                    e.currentTarget.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,0.02)';
+                                }}
+                            />
+                            <span
+                                css={tw`block mt-2 text-xs leading-relaxed`}
+                                style={{ color: CloudUI.textMuted }}
+                            >
+                                Par défaut : <span css={tw`font-mono`}>vps-XX.1vps.cc</span>. Laissez vide pour
+                                rétablir ce PTR.
+                            </span>
+                        </label>
+                    </div>
+
+                    <div
+                        css={tw`mt-6 pt-4 flex flex-col-reverse sm:flex-row sm:justify-end gap-2 sm:gap-3`}
+                        style={{ borderTop: `1px solid ${HMS.cardBorder}` }}
+                    >
                         <GhostButton onClick={() => setEditOpen(false)}>Annuler</GhostButton>
                         <PrimaryButton onClick={saveRdns} disabled={saving}>
                             {saving ? 'Enregistrement…' : 'Enregistrer'}
