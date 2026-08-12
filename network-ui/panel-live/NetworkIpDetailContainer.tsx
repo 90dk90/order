@@ -1,16 +1,18 @@
 import React, { Fragment, useEffect, useMemo, useState } from 'react';
 import tw from 'twin.macro';
-import { Link, useParams, useHistory } from 'react-router-dom';
+import { useParams, useHistory } from 'react-router-dom';
 import useSWR from 'swr';
 import * as Icon from 'react-feather';
 import useFlash from '@/plugins/useFlash';
 import Spinner from '@/components/elements/Spinner';
 import NetworkNavTabs from '@/components/network/NetworkNavTabs';
 import HmsModal from '@/components/hms/HmsModal';
-import { HMS, hmsCardStyle } from '@/components/hms/hmsTheme';
+import { HMS } from '@/components/hms/hmsTheme';
 import { CloudUI } from '@/components/hms/cloudUi';
 import {
+    DdosFilterMode,
     DdosIncident,
+    getDdosFilterModes,
     getDdosIncidents,
     getNetworkIps,
     NetworkIpRow,
@@ -18,12 +20,16 @@ import {
 } from '@/api/network';
 import {
     Badge,
+    DataTable,
     EmptyState,
     GhostButton,
+    GhostLink,
     NetworkHeader,
     NetworkPage,
     Panel,
     PrimaryButton,
+    SearchField,
+    Td,
     copyText,
     formatWhen,
 } from '@/components/network/NetworkUi';
@@ -51,23 +57,132 @@ const maskFromPrefix = (ip: string) => {
     return '—';
 };
 
-const cardShell: React.CSSProperties = {
-    ...hmsCardStyle,
-    overflow: 'hidden',
+const Metric = ({
+    label,
+    value,
+    hint,
+    tone = 'default',
+}: {
+    label: string;
+    value: string | number;
+    hint?: string;
+    tone?: 'default' | 'ok' | 'warn' | 'danger';
+}) => {
+    const color =
+        tone === 'ok'
+            ? CloudUI.success
+            : tone === 'warn'
+              ? CloudUI.warning
+              : tone === 'danger'
+                ? CloudUI.danger
+                : CloudUI.text;
+    return (
+        <div css={tw`min-w-0 py-1`}>
+            <p
+                css={tw`m-0 text-[11px] font-semibold uppercase tracking-wider`}
+                style={{ color: CloudUI.textMuted, letterSpacing: '0.08em' }}
+            >
+                {label}
+            </p>
+            <p css={tw`m-0 mt-1 text-2xl font-semibold tabular-nums tracking-tight`} style={{ color }}>
+                {value}
+            </p>
+            {hint ? (
+                <p css={tw`m-0 mt-0.5 text-xs truncate`} style={{ color: CloudUI.textMuted }}>
+                    {hint}
+                </p>
+            ) : null}
+        </div>
+    );
 };
 
-const sectionIconWrap: React.CSSProperties = {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    background: CloudUI.accentMuted,
-    color: CloudUI.accentHover,
-    border: '1px solid rgba(16,185,129,0.28)',
-    flexShrink: 0,
+const StatusDot = ({
+    tone,
+    label,
+}: {
+    tone: 'ok' | 'warn' | 'danger' | 'neutral';
+    label: string;
+}) => {
+    const color =
+        tone === 'ok'
+            ? CloudUI.success
+            : tone === 'warn'
+              ? CloudUI.warning
+              : tone === 'danger'
+                ? CloudUI.danger
+                : CloudUI.textMuted;
+    return (
+        <span css={tw`inline-flex items-center gap-2 text-sm`} style={{ color: CloudUI.textSecondary }}>
+            <span
+                css={tw`inline-block rounded-full flex-shrink-0`}
+                style={{ width: 7, height: 7, background: color, boxShadow: `0 0 0 3px ${color}22` }}
+            />
+            {label}
+        </span>
+    );
 };
+
+const CopyIconButton = ({
+    value,
+    copied,
+    onCopy,
+}: {
+    value: string;
+    copied: boolean;
+    onCopy: (v: string) => void;
+}) => (
+    <button
+        type="button"
+        title={copied ? 'Copié' : 'Copier'}
+        onClick={() => onCopy(value)}
+        css={tw`inline-flex items-center justify-center rounded-lg border-0 cursor-pointer transition-colors flex-shrink-0`}
+        style={{
+            width: 34,
+            height: 34,
+            background: copied ? CloudUI.accentMuted : 'rgba(255,255,255,0.03)',
+            color: copied ? CloudUI.accentHover : CloudUI.textMuted,
+            border: `1px solid ${copied ? 'rgba(16,185,129,0.35)' : HMS.cardBorder}`,
+        }}
+    >
+        {copied ? <Icon.Check size={14} /> : <Icon.Copy size={14} />}
+    </button>
+);
+
+const HoverRow = ({ children }: { children: React.ReactNode }) => {
+    const [hover, setHover] = useState(false);
+    return (
+        <tr
+            onMouseEnter={() => setHover(true)}
+            onMouseLeave={() => setHover(false)}
+            style={{
+                background: hover ? 'rgba(255,255,255,0.025)' : 'transparent',
+                transition: 'background 0.12s ease',
+            }}
+        >
+            {children}
+        </tr>
+    );
+};
+
+const DefRow = ({
+    label,
+    children,
+    last,
+}: {
+    label: string;
+    children: React.ReactNode;
+    last?: boolean;
+}) => (
+    <div
+        css={tw`flex items-center justify-between gap-4 px-4 sm:px-6 py-3.5`}
+        style={{ borderBottom: last ? 'none' : `1px solid ${HMS.cardBorder}` }}
+    >
+        <dt css={tw`m-0 text-sm`} style={{ color: CloudUI.textMuted }}>
+            {label}
+        </dt>
+        <dd css={tw`m-0 text-right min-w-0`}>{children}</dd>
+    </div>
+);
 
 export default () => {
     const { ipId } = useParams<{ ipId: string }>();
@@ -84,13 +199,14 @@ export default () => {
     const { data: ips, error, mutate } = useSWR<NetworkIpRow[]>('network-ips', getNetworkIps, {
         revalidateOnFocus: true,
     });
+    const { data: modes } = useSWR<DdosFilterMode[]>('network-ddos-modes', getDdosFilterModes);
     const { data: incidents } = useSWR<DdosIncident[]>('network-ddos-incidents', getDdosIncidents);
 
     const [tab, setTab] = useState<PrefixTab>('general');
     const [editOpen, setEditOpen] = useState(false);
     const [hostname, setHostname] = useState('');
     const [saving, setSaving] = useState(false);
-    const [copied, setCopied] = useState(false);
+    const [copied, setCopied] = useState<string | null>(null);
     const [ptrFilter, setPtrFilter] = useState('');
     const [selected, setSelected] = useState(false);
 
@@ -106,6 +222,14 @@ export default () => {
             ) || null
         );
     }, [ips, decoded]);
+
+    const modeByIp = useMemo(() => {
+        const map: Record<string, DdosFilterMode> = {};
+        (modes || []).forEach((m) => {
+            map[m.ip] = m;
+        });
+        return map;
+    }, [modes]);
 
     useEffect(() => {
         setTab('general');
@@ -128,6 +252,11 @@ export default () => {
             return !ip || ip === target || ip.includes(target) || target.includes(ip);
         });
     }, [incidents, row]);
+
+    const activeIncidents = useMemo(
+        () => relatedIncidents.filter((i) => !i.incident_stop).length,
+        [relatedIncidents]
+    );
 
     if (!ips && !error) {
         return (
@@ -160,23 +289,25 @@ export default () => {
     const ipBare = bareIp(row.ip);
     const ptr = row.reverse_dns.preferred || row.reverse_dns.live || '';
     const zone = inAddrArpa(row.ip);
+    const filterMode = modeByIp[row.ip]?.filter_mode || 'dynamic';
+    const alwaysOn = filterMode === 'always_on';
     const ptrVisible =
         !ptrFilter.trim() ||
         ipBare.toLowerCase().includes(ptrFilter.toLowerCase()) ||
         ptr.toLowerCase().includes(ptrFilter.toLowerCase());
 
     const tabs: { id: PrefixTab; label: string }[] = [
-        { id: 'general', label: 'Informations générales' },
+        { id: 'general', label: 'Général' },
         { id: 'stats', label: 'Statistiques' },
         { id: 'analysis', label: 'Analyse' },
         { id: 'attacks', label: 'Attaques' },
     ];
 
-    const onCopy = async () => {
-        const ok = await copyText(label);
+    const onCopy = async (value: string) => {
+        const ok = await copyText(value);
         if (ok) {
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 1400);
+            setCopied(value);
+            window.setTimeout(() => setCopied((c) => (c === value ? null : c)), 1400);
         }
     };
 
@@ -213,16 +344,78 @@ export default () => {
 
     return (
         <NetworkPage>
-            <NetworkHeader
-                icon={Icon.Globe}
-                title={label}
-                subtitle="Gérez votre préfixe IP, configurez le reverse DNS et visualisez les statistiques."
-            />
+            <div css={tw`flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between`}>
+                <div css={tw`min-w-0`}>
+                    <NetworkHeader
+                        icon={Icon.Globe}
+                        title={label}
+                        subtitle="Configuration réseau, reverse DNS et protection DDoS de ce préfixe."
+                    />
+                    <div css={tw`mt-3 flex flex-wrap items-center gap-3`}>
+                        <StatusDot tone={row.routed ? 'ok' : 'neutral'} label={row.routed ? 'Routé' : 'Non routé'} />
+                        <StatusDot
+                            tone={alwaysOn ? 'warn' : 'ok'}
+                            label={alwaysOn ? 'Always-on' : 'Dynamic'}
+                        />
+                        <span css={tw`text-sm truncate`} style={{ color: CloudUI.textMuted }}>
+                            {row.service.name}
+                        </span>
+                    </div>
+                </div>
+                <div css={tw`flex flex-wrap items-center gap-2 flex-shrink-0`}>
+                    <CopyIconButton value={label} copied={copied === label} onCopy={onCopy} />
+                    <GhostLink compact to="/network/ips">
+                        <Icon.ArrowLeft size={13} />
+                        Retour
+                    </GhostLink>
+                </div>
+            </div>
+
             <NetworkNavTabs active="ips" />
 
             <div
-                css={tw`flex flex-wrap gap-1 border-b mb-6`}
-                style={{ borderColor: HMS.cardBorder }}
+                css={tw`rounded-xl px-4 sm:px-6 py-4 grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6`}
+                style={{
+                    background: CloudUI.surface,
+                    border: `1px solid ${HMS.cardBorder}`,
+                }}
+            >
+                <Metric
+                    label="Routage"
+                    value={row.routed ? 'Actif' : 'Inactif'}
+                    hint={row.service.name}
+                    tone={row.routed ? 'ok' : 'default'}
+                />
+                <Metric
+                    label="Anti-DDoS"
+                    value={alwaysOn ? 'Always-on' : 'Dynamic'}
+                    hint="Mitigation Digi"
+                    tone={alwaysOn ? 'warn' : 'ok'}
+                />
+                <Metric
+                    label="Reverse DNS"
+                    value={ptr ? 'OK' : '—'}
+                    hint={ptr || 'Non défini'}
+                    tone={ptr ? 'ok' : 'default'}
+                />
+                <Metric
+                    label="Attaques"
+                    value={relatedIncidents.length}
+                    hint={
+                        activeIncidents
+                            ? `${activeIncidents} en cours`
+                            : relatedIncidents.length
+                              ? 'Historique'
+                              : 'Aucune'
+                    }
+                    tone={activeIncidents ? 'danger' : relatedIncidents.length ? 'warn' : 'ok'}
+                />
+            </div>
+
+            <div
+                css={tw`flex p-1 rounded-xl gap-1 w-full overflow-x-auto`}
+                style={{ background: HMS.inputBg, border: `1px solid ${HMS.cardBorder}` }}
+                role="tablist"
             >
                 {tabs.map((t) => {
                     const active = tab === t.id;
@@ -230,14 +423,31 @@ export default () => {
                         <button
                             key={t.id}
                             type="button"
+                            role="tab"
+                            aria-selected={active}
                             onClick={() => setTab(t.id)}
-                            css={tw`px-4 py-3 text-sm font-semibold border-0 border-b-2 rounded-t-lg cursor-pointer bg-transparent`}
+                            css={tw`flex-1 px-2 sm:px-3 py-2 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap border-0 cursor-pointer transition-colors text-center`}
                             style={{
+                                background: active ? CloudUI.accentMuted : 'transparent',
                                 color: active ? CloudUI.accentHover : CloudUI.textMuted,
-                                borderBottomColor: active ? CloudUI.accent : 'transparent',
+                                boxShadow: active ? 'inset 0 0 0 1px rgba(16,185,129,0.28)' : 'none',
+                                minHeight: 40,
                             }}
                         >
                             {t.label}
+                            {t.id === 'attacks' && relatedIncidents.length ? (
+                                <span
+                                    css={tw`ml-1.5 inline-flex items-center justify-center rounded-md px-1.5 text-[10px] font-semibold tabular-nums`}
+                                    style={{
+                                        background: activeIncidents
+                                            ? 'rgba(239,68,68,0.18)'
+                                            : 'rgba(255,255,255,0.06)',
+                                        color: activeIncidents ? CloudUI.danger : CloudUI.textMuted,
+                                    }}
+                                >
+                                    {relatedIncidents.length}
+                                </span>
+                            ) : null}
                         </button>
                     );
                 })}
@@ -245,325 +455,308 @@ export default () => {
 
             {tab === 'general' ? (
                 <Fragment>
-                    <div style={cardShell}>
-                        <div
-                            css={tw`flex flex-col gap-5 px-5 py-5 sm:px-8 sm:py-6 sm:flex-row sm:items-center sm:justify-between`}
-                        >
-                            <div css={tw`flex items-center gap-4 min-w-0`}>
-                                <div
-                                    css={tw`w-14 h-14 rounded-lg flex items-center justify-center flex-shrink-0`}
-                                    style={{
-                                        background: CloudUI.accentMuted,
-                                        color: CloudUI.accentHover,
-                                        border: '1px solid rgba(16,185,129,0.28)',
-                                    }}
-                                >
-                                    <Icon.Globe size={22} />
-                                </div>
-                                <div css={tw`min-w-0`}>
-                                    <p
-                                        css={tw`m-0 text-xs font-semibold uppercase`}
-                                        style={{ color: CloudUI.textMuted, letterSpacing: '0.14em' }}
-                                    >
-                                        Détails du préfixe
-                                    </p>
-                                    <div css={tw`mt-1.5 flex flex-wrap items-center gap-3`}>
-                                        <span
-                                            css={tw`font-mono text-xl sm:text-2xl font-bold truncate`}
-                                            style={{ color: CloudUI.text }}
-                                        >
-                                            {label}
-                                        </span>
-                                        <Badge tone={row.routed ? 'ok' : 'neutral'}>
-                                            {row.routed ? 'Routé' : 'Non routé'}
-                                        </Badge>
-                                    </div>
-                                </div>
-                            </div>
-                            <div css={tw`flex flex-wrap items-center gap-2 flex-shrink-0`}>
-                                <GhostButton compact onClick={onCopy}>
-                                    {copied ? <Icon.Check size={13} /> : <Icon.Copy size={13} />}
-                                    {copied ? 'Copié' : 'Copier'}
-                                </GhostButton>
-                                <GhostButton compact onClick={() => history.push('/network/ips')}>
-                                    <Icon.ArrowLeft size={13} />
-                                    Retour aux IPs
-                                </GhostButton>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div css={tw`grid grid-cols-1 lg:grid-cols-2 gap-5 mt-5`}>
-                        <div style={cardShell}>
+                    <div css={tw`grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5`}>
+                        <Panel padded={false}>
                             <div
-                                css={tw`flex items-center gap-3 px-5 py-4 border-b`}
+                                css={tw`px-4 sm:px-6 py-4 border-b`}
                                 style={{ borderColor: HMS.cardBorder }}
                             >
-                                <span style={sectionIconWrap}>
-                                    <Icon.GitBranch size={15} />
-                                </span>
-                                <h2 css={tw`m-0 text-base font-semibold`} style={{ color: CloudUI.text }}>
+                                <h2 css={tw`m-0 text-base font-semibold tracking-tight`} style={{ color: CloudUI.text }}>
                                     Configuration réseau
                                 </h2>
+                                <p css={tw`m-0 mt-1 text-sm`} style={{ color: CloudUI.textMuted }}>
+                                    Paramètres d&apos;adressage pour {ipBare}
+                                </p>
                             </div>
                             <dl css={tw`m-0`}>
-                                {[
-                                    { label: 'Masque', value: maskFromPrefix(row.ip) },
-                                    { label: 'Passerelle', value: gatewayFromPrefix(row.ip) },
-                                    { label: 'DNS', value: '1.1.1.1' },
-                                    { label: 'Anti-DDOS', value: 'Activé', badge: true },
-                                    { label: 'MAC', value: '00:00:00:00:00:00' },
-                                ].map((item, idx, arr) => (
-                                    <div
-                                        key={item.label}
-                                        css={tw`flex items-center justify-between gap-4 px-5 py-4`}
-                                        style={{
-                                            borderBottom:
-                                                idx === arr.length - 1 ? 'none' : `1px solid ${HMS.cardBorder}`,
-                                        }}
-                                    >
-                                        <dt css={tw`m-0 text-sm`} style={{ color: CloudUI.textMuted }}>
-                                            {item.label}
-                                        </dt>
-                                        <dd css={tw`m-0`}>
-                                            {item.badge ? (
-                                                <Badge tone="ok">{item.value}</Badge>
-                                            ) : (
-                                                <span
-                                                    css={tw`font-mono text-sm font-medium`}
-                                                    style={{ color: CloudUI.text }}
-                                                >
-                                                    {item.value}
-                                                </span>
-                                            )}
-                                        </dd>
-                                    </div>
-                                ))}
+                                <DefRow label="Masque">
+                                    <span css={tw`font-mono text-sm font-medium`} style={{ color: CloudUI.text }}>
+                                        {maskFromPrefix(row.ip)}
+                                    </span>
+                                </DefRow>
+                                <DefRow label="Passerelle">
+                                    <span css={tw`inline-flex items-center gap-2`}>
+                                        <span css={tw`font-mono text-sm font-medium`} style={{ color: CloudUI.text }}>
+                                            {gatewayFromPrefix(row.ip)}
+                                        </span>
+                                        <CopyIconButton
+                                            value={gatewayFromPrefix(row.ip)}
+                                            copied={copied === gatewayFromPrefix(row.ip)}
+                                            onCopy={onCopy}
+                                        />
+                                    </span>
+                                </DefRow>
+                                <DefRow label="DNS">
+                                    <span css={tw`inline-flex items-center gap-2`}>
+                                        <span css={tw`font-mono text-sm font-medium`} style={{ color: CloudUI.text }}>
+                                            1.1.1.1
+                                        </span>
+                                        <CopyIconButton
+                                            value="1.1.1.1"
+                                            copied={copied === '1.1.1.1'}
+                                            onCopy={onCopy}
+                                        />
+                                    </span>
+                                </DefRow>
+                                <DefRow label="Anti-DDoS">
+                                    <Badge tone="ok">
+                                        <Icon.Shield size={11} />
+                                        Activé
+                                    </Badge>
+                                </DefRow>
+                                <DefRow label="MAC" last>
+                                    <span css={tw`font-mono text-sm font-medium`} style={{ color: CloudUI.text }}>
+                                        00:00:00:00:00:00
+                                    </span>
+                                </DefRow>
                             </dl>
-                        </div>
+                        </Panel>
 
-                        <div style={cardShell}>
+                        <Panel padded={false}>
                             <div
-                                css={tw`flex items-center gap-3 px-5 py-4 border-b`}
+                                css={tw`px-4 sm:px-6 py-4 border-b`}
                                 style={{ borderColor: HMS.cardBorder }}
                             >
-                                <span style={sectionIconWrap}>
-                                    <Icon.Server size={15} />
-                                </span>
-                                <h2 css={tw`m-0 text-base font-semibold`} style={{ color: CloudUI.text }}>
+                                <h2 css={tw`m-0 text-base font-semibold tracking-tight`} style={{ color: CloudUI.text }}>
                                     Statut routage
                                 </h2>
+                                <p css={tw`m-0 mt-1 text-sm`} style={{ color: CloudUI.textMuted }}>
+                                    Instance et état de publication BGP
+                                </p>
                             </div>
-                            <div css={tw`px-5 py-5`}>
+                            <div css={tw`px-4 sm:px-6 py-5 space-y-4`}>
                                 <div css={tw`flex items-start justify-between gap-4`}>
                                     <p css={tw`m-0 text-sm leading-relaxed`} style={{ color: CloudUI.textMuted }}>
                                         {row.routed
                                             ? 'Ce préfixe est actuellement routé vers un service.'
                                             : 'Aucune route active détectée pour ce préfixe.'}
                                     </p>
-                                    <Badge tone={row.routed ? 'ok' : 'neutral'}>
-                                        {row.routed ? 'Routé' : 'Non routé'}
-                                    </Badge>
+                                    <StatusDot
+                                        tone={row.routed ? 'ok' : 'neutral'}
+                                        label={row.routed ? 'Routé' : 'Non routé'}
+                                    />
                                 </div>
-                                <div
-                                    css={tw`mt-5 rounded-lg overflow-hidden`}
-                                    style={{ border: `1px solid ${HMS.cardBorder}` }}
-                                >
-                                    <div
-                                        css={tw`flex flex-wrap items-center gap-3 px-4 py-4 border-b`}
-                                        style={{ borderColor: HMS.cardBorder }}
-                                    >
-                                        <div
-                                            css={tw`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0`}
-                                            style={{
-                                                background: 'rgba(255,255,255,0.04)',
-                                                border: `1px solid ${HMS.cardBorder}`,
-                                                color: CloudUI.textMuted,
-                                            }}
-                                        >
-                                            <Icon.Server size={18} />
-                                        </div>
-                                        <div css={tw`min-w-0 flex-1`}>
-                                            <p
-                                                css={tw`m-0 text-xs font-semibold uppercase`}
-                                                style={{ color: CloudUI.textMuted, letterSpacing: '0.12em' }}
-                                            >
-                                                Service routé
-                                            </p>
-                                            <p
-                                                css={tw`m-0 mt-0.5 text-base font-semibold truncate`}
-                                                style={{ color: CloudUI.text }}
-                                            >
-                                                {row.service.name}
-                                            </p>
-                                        </div>
-                                        <GhostButton compact onClick={() => history.push(`/server/${row.service.uuid}`)}>
-                                            Ouvrir le service
-                                            <Icon.ExternalLink size={12} />
-                                        </GhostButton>
-                                    </div>
-                                    <div css={tw`px-4 py-3`}>
-                                        <p css={tw`m-0 text-sm`} style={{ color: CloudUI.textMuted }}>
-                                            ID {row.service.uuidShort || row.service.uuid}
-                                        </p>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
 
-                    <div style={{ ...cardShell, marginTop: 20 }}>
-                        <div
-                            css={tw`flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between px-5 py-5 border-b`}
-                            style={{ borderColor: HMS.cardBorder }}
-                        >
-                            <div css={tw`flex items-start gap-3`}>
-                                <span style={sectionIconWrap}>
-                                    <Icon.Type size={15} />
-                                </span>
-                                <div>
-                                    <h2 css={tw`m-0 text-base font-semibold`} style={{ color: CloudUI.text }}>
-                                        PTR / Reverse DNS
-                                    </h2>
-                                    <p css={tw`m-0 mt-1 text-sm`} style={{ color: CloudUI.textMuted }}>
-                                        Associez un nom d&apos;hôte (PTR) à chaque IP pour le reverse DNS.
-                                    </p>
-                                </div>
-                            </div>
-                            <div css={tw`relative w-full sm:max-w-xs`}>
-                                <span
-                                    css={tw`absolute left-3 top-1/2`}
+                                <div
+                                    css={tw`rounded-xl px-4 py-4 flex flex-col sm:flex-row sm:items-center gap-3`}
                                     style={{
-                                        color: CloudUI.textMuted,
-                                        transform: 'translateY(-50%)',
-                                        pointerEvents: 'none',
-                                        display: 'inline-flex',
-                                    }}
-                                >
-                                    <Icon.Search size={14} />
-                                </span>
-                                <input
-                                    value={ptrFilter}
-                                    onChange={(e) => setPtrFilter(e.target.value)}
-                                    placeholder="Filtrer par IP ou hostname…"
-                                    css={tw`w-full rounded-lg pl-9 pr-3 py-2.5 text-sm outline-none`}
-                                    style={{
-                                        background: HMS.inputBg,
-                                        color: CloudUI.text,
+                                        background: 'rgba(255,255,255,0.02)',
                                         border: `1px solid ${HMS.cardBorder}`,
                                     }}
+                                >
+                                    <div
+                                        css={tw`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0`}
+                                        style={{
+                                            background: CloudUI.accentMuted,
+                                            color: CloudUI.accentHover,
+                                            border: '1px solid rgba(16,185,129,0.28)',
+                                        }}
+                                    >
+                                        <Icon.Server size={18} />
+                                    </div>
+                                    <div css={tw`min-w-0 flex-1`}>
+                                        <p
+                                            css={tw`m-0 text-[11px] font-semibold uppercase tracking-wider`}
+                                            style={{ color: CloudUI.textMuted, letterSpacing: '0.08em' }}
+                                        >
+                                            Service routé
+                                        </p>
+                                        <p
+                                            css={tw`m-0 mt-0.5 text-base font-semibold truncate`}
+                                            style={{ color: CloudUI.text }}
+                                        >
+                                            {row.service.name}
+                                        </p>
+                                        <p
+                                            css={tw`m-0 mt-0.5 text-xs font-mono truncate`}
+                                            style={{ color: CloudUI.textMuted }}
+                                        >
+                                            {row.service.uuidShort || row.service.uuid}
+                                        </p>
+                                    </div>
+                                    <GhostLink compact to={`/server/${row.service.uuid}`}>
+                                        Ouvrir
+                                        <Icon.ExternalLink size={12} />
+                                    </GhostLink>
+                                </div>
+                            </div>
+                        </Panel>
+                    </div>
+
+                    <Panel padded={false}>
+                        <div
+                            css={tw`px-4 sm:px-6 py-4 sm:py-5 flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3`}
+                            style={{ borderBottom: `1px solid ${HMS.cardBorder}` }}
+                        >
+                            <div css={tw`min-w-0`}>
+                                <h2 css={tw`m-0 text-base font-semibold tracking-tight`} style={{ color: CloudUI.text }}>
+                                    PTR / Reverse DNS
+                                </h2>
+                                <p css={tw`m-0 mt-1 text-sm leading-relaxed max-w-2xl`} style={{ color: CloudUI.textMuted }}>
+                                    Associez un hostname à {ipBare} pour le reverse DNS.
+                                </p>
+                            </div>
+                            <div css={tw`w-full lg:w-72 flex-shrink-0`}>
+                                <SearchField
+                                    value={ptrFilter}
+                                    onChange={setPtrFilter}
+                                    placeholder="Filtrer par IP ou hostname…"
                                 />
                             </div>
                         </div>
 
                         <div
-                            css={tw`flex flex-wrap items-center justify-between gap-2 px-5 py-3 border-b`}
+                            css={tw`flex flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-3`}
                             style={{
-                                borderColor: HMS.cardBorder,
-                                background: 'rgba(255,255,255,0.02)',
+                                borderBottom: `1px solid ${HMS.cardBorder}`,
+                                background: 'rgba(255,255,255,0.015)',
                             }}
                         >
-                            <div css={tw`flex gap-2`}>
-                                <GhostButton onClick={() => setSelected(true)}>Sélectionner tout</GhostButton>
-                                <GhostButton disabled={!selected} onClick={() => setSelected(false)}>
-                                    Tout retirer
+                            <div css={tw`flex flex-wrap gap-2`}>
+                                <GhostButton compact onClick={() => setSelected(true)}>
+                                    Sélectionner
+                                </GhostButton>
+                                <GhostButton compact disabled={!selected} onClick={() => setSelected(false)}>
+                                    Retirer
                                 </GhostButton>
                             </div>
-                            <GhostButton disabled={!selected} onClick={downloadCsv}>
+                            <GhostButton compact disabled={!selected} onClick={downloadCsv}>
                                 <Icon.Download size={13} />
-                                Télécharger (CSV)
+                                CSV
                             </GhostButton>
                         </div>
 
-                        <div css={tw`overflow-x-auto`}>
-                            <table css={tw`w-full min-w-[720px]`}>
-                                <thead>
-                                    <tr style={{ borderBottom: `1px solid ${HMS.cardBorder}` }}>
-                                        {['', 'IP', 'Zone', 'État PTR', 'Gérer'].map((h, i) => (
-                                            <th
-                                                key={h || 'cb'}
-                                                css={tw`px-5 py-3 text-sm font-semibold`}
-                                                style={{
-                                                    color: CloudUI.textMuted,
-                                                    textAlign: i === 4 ? 'right' : 'left',
-                                                    width: i === 0 ? 48 : undefined,
-                                                }}
+                        {ptrVisible ? (
+                            <DataTable
+                                headers={[
+                                    { key: 'cb', label: '', width: '6%' },
+                                    { key: 'ip', label: 'IP', width: '18%' },
+                                    { key: 'zone', label: 'Zone', width: '28%' },
+                                    { key: 'ptr', label: 'État PTR', width: '30%' },
+                                    { key: 'act', label: '', width: '18%', align: 'right' },
+                                ]}
+                            >
+                                <HoverRow>
+                                    <Td>
+                                        <input
+                                            type="checkbox"
+                                            checked={selected}
+                                            onChange={(e) => setSelected(e.target.checked)}
+                                        />
+                                    </Td>
+                                    <Td>
+                                        <span css={tw`font-mono text-sm font-medium`} style={{ color: CloudUI.text }}>
+                                            {ipBare}
+                                        </span>
+                                    </Td>
+                                    <Td>
+                                        <span css={tw`font-mono text-xs`} style={{ color: CloudUI.textMuted }}>
+                                            {zone}
+                                        </span>
+                                    </Td>
+                                    <Td>
+                                        {ptr ? (
+                                            <span
+                                                css={tw`font-mono text-sm break-all`}
+                                                style={{ color: CloudUI.textSecondary }}
                                             >
-                                                {h}
-                                            </th>
-                                        ))}
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {ptrVisible ? (
-                                        <tr style={{ borderBottom: `1px solid ${HMS.cardBorder}` }}>
-                                            <td css={tw`px-5 py-4`}>
-                                                <input
-                                                    type="checkbox"
-                                                    checked={selected}
-                                                    onChange={(e) => setSelected(e.target.checked)}
-                                                />
-                                            </td>
-                                            <td css={tw`px-5 py-4`}>
-                                                <span
-                                                    css={tw`font-mono text-sm`}
-                                                    style={{ color: CloudUI.text }}
-                                                >
-                                                    {ipBare}
-                                                </span>
-                                            </td>
-                                            <td
-                                                css={tw`px-5 py-4 font-mono text-xs`}
-                                                style={{ color: CloudUI.textMuted }}
-                                            >
-                                                {zone}
-                                            </td>
-                                            <td css={tw`px-5 py-4`}>
-                                                {ptr ? (
-                                                    <span
-                                                        css={tw`font-mono text-sm break-all`}
-                                                        style={{ color: CloudUI.textSecondary }}
-                                                    >
-                                                        {ptr}
-                                                    </span>
-                                                ) : (
-                                                    <Badge tone="neutral">Non défini</Badge>
-                                                )}
-                                            </td>
-                                            <td css={tw`px-5 py-4 text-right`}>
-                                                <GhostButton compact onClick={openEdit}>
-                                                    <Icon.Edit3 size={13} />
-                                                    Modifier
-                                                </GhostButton>
-                                            </td>
-                                        </tr>
-                                    ) : (
-                                        <tr>
-                                            <td
-                                                colSpan={5}
-                                                css={tw`px-5 py-10 text-center text-sm`}
-                                                style={{ color: CloudUI.textMuted }}
-                                            >
-                                                Aucun PTR à afficher
-                                            </td>
-                                        </tr>
-                                    )}
-                                </tbody>
-                            </table>
+                                                {ptr}
+                                            </span>
+                                        ) : (
+                                            <Badge tone="neutral">Non défini</Badge>
+                                        )}
+                                    </Td>
+                                    <Td align="right">
+                                        <GhostButton compact onClick={openEdit}>
+                                            <Icon.Edit3 size={13} />
+                                            Modifier
+                                        </GhostButton>
+                                    </Td>
+                                </HoverRow>
+                            </DataTable>
+                        ) : (
+                            <p
+                                css={tw`hidden lg:block m-0 py-10 text-center text-sm`}
+                                style={{ color: CloudUI.textMuted }}
+                            >
+                                Aucun PTR à afficher
+                            </p>
+                        )}
+
+                        <div css={tw`lg:hidden px-4 py-4 space-y-3`}>
+                            {ptrVisible ? (
+                                <div
+                                    css={tw`rounded-xl p-4 space-y-3`}
+                                    style={{ border: `1px solid ${HMS.cardBorder}` }}
+                                >
+                                    <div css={tw`flex items-center justify-between gap-3`}>
+                                        <label css={tw`inline-flex items-center gap-2 text-sm`} style={{ color: CloudUI.textSecondary }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={selected}
+                                                onChange={(e) => setSelected(e.target.checked)}
+                                            />
+                                            Sélection
+                                        </label>
+                                        <GhostButton compact onClick={openEdit}>
+                                            <Icon.Edit3 size={13} />
+                                            Modifier
+                                        </GhostButton>
+                                    </div>
+                                    <div>
+                                        <p
+                                            css={tw`m-0 text-[11px] font-semibold uppercase tracking-wider`}
+                                            style={{ color: CloudUI.textMuted }}
+                                        >
+                                            IP
+                                        </p>
+                                        <p css={tw`m-0 mt-1 font-mono text-sm`} style={{ color: CloudUI.text }}>
+                                            {ipBare}
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <p
+                                            css={tw`m-0 text-[11px] font-semibold uppercase tracking-wider`}
+                                            style={{ color: CloudUI.textMuted }}
+                                        >
+                                            Zone
+                                        </p>
+                                        <p css={tw`m-0 mt-1 font-mono text-xs`} style={{ color: CloudUI.textMuted }}>
+                                            {zone}
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <p
+                                            css={tw`m-0 text-[11px] font-semibold uppercase tracking-wider`}
+                                            style={{ color: CloudUI.textMuted }}
+                                        >
+                                            PTR
+                                        </p>
+                                        <p css={tw`m-0 mt-1 font-mono text-sm break-all`} style={{ color: CloudUI.textSecondary }}>
+                                            {ptr || 'Non défini'}
+                                        </p>
+                                    </div>
+                                </div>
+                            ) : (
+                                <p css={tw`m-0 text-sm text-center py-6`} style={{ color: CloudUI.textMuted }}>
+                                    Aucun PTR à afficher
+                                </p>
+                            )}
                         </div>
+
                         <div
-                            css={tw`px-5 py-3 text-xs border-t`}
+                            css={tw`px-4 sm:px-6 py-3 text-xs border-t`}
                             style={{ color: CloudUI.textMuted, borderColor: HMS.cardBorder }}
                         >
-                            {selected ? '1 ligne(s) sélectionnée(s).' : 'Aucune ligne sélectionnée.'}
+                            {selected ? '1 ligne sélectionnée.' : 'Aucune ligne sélectionnée.'}
                         </div>
-                    </div>
+                    </Panel>
                 </Fragment>
             ) : null}
 
             {tab === 'stats' ? (
                 <Panel>
-                    <h2 css={tw`m-0 text-base font-semibold`} style={{ color: CloudUI.text }}>
+                    <h2 css={tw`m-0 text-base font-semibold tracking-tight`} style={{ color: CloudUI.text }}>
                         Statistiques réseau
                     </h2>
                     <p css={tw`m-0 mt-1 text-sm`} style={{ color: CloudUI.textMuted }}>
@@ -581,7 +774,7 @@ export default () => {
 
             {tab === 'analysis' ? (
                 <Panel>
-                    <h2 css={tw`m-0 text-base font-semibold`} style={{ color: CloudUI.text }}>
+                    <h2 css={tw`m-0 text-base font-semibold tracking-tight`} style={{ color: CloudUI.text }}>
                         Analyse du trafic
                     </h2>
                     <p css={tw`m-0 mt-1 text-sm`} style={{ color: CloudUI.textMuted }}>
@@ -600,24 +793,21 @@ export default () => {
             {tab === 'attacks' ? (
                 <Panel padded={false}>
                     <div
-                        css={tw`flex flex-wrap items-center justify-between gap-3 px-5 py-5 border-b`}
-                        style={{ borderColor: HMS.cardBorder }}
+                        css={tw`px-4 sm:px-6 py-4 sm:py-5 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3`}
+                        style={{ borderBottom: `1px solid ${HMS.cardBorder}` }}
                     >
                         <div>
-                            <h2 css={tw`m-0 text-base font-semibold`} style={{ color: CloudUI.text }}>
+                            <h2 css={tw`m-0 text-base font-semibold tracking-tight`} style={{ color: CloudUI.text }}>
                                 Historique des attaques
                             </h2>
                             <p css={tw`m-0 mt-1 text-sm`} style={{ color: CloudUI.textMuted }}>
                                 Événements DDoS enregistrés pour {label}
                             </p>
                         </div>
-                        <Link
-                            to={`/network/ddos?ip=${encodeURIComponent(row.ip)}`}
-                            css={tw`text-sm font-semibold no-underline`}
-                            style={{ color: CloudUI.accentHover }}
-                        >
-                            Voir toutes les attaques
-                        </Link>
+                        <GhostLink compact to={`/network/ddos?ip=${encodeURIComponent(row.ip)}`}>
+                            Voir toutes
+                            <Icon.ArrowRight size={12} />
+                        </GhostLink>
                     </div>
                     {relatedIncidents.length === 0 ? (
                         <EmptyState
@@ -626,61 +816,86 @@ export default () => {
                             description="Aucune attaque enregistrée pour cette période."
                         />
                     ) : (
-                        <div css={tw`overflow-x-auto`}>
-                            <table css={tw`w-full min-w-[720px]`}>
-                                <thead>
-                                    <tr style={{ borderBottom: `1px solid ${HMS.cardBorder}` }}>
-                                        {['Début', 'Fin', 'Type', 'Débit', 'Actions'].map((h, i) => (
-                                            <th
-                                                key={h}
-                                                css={tw`px-5 py-3 text-xs font-semibold uppercase`}
-                                                style={{
-                                                    color: CloudUI.textMuted,
-                                                    letterSpacing: '0.08em',
-                                                    textAlign: i === 4 ? 'right' : 'left',
-                                                }}
-                                            >
-                                                {h}
-                                            </th>
-                                        ))}
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {relatedIncidents.map((inc) => (
-                                        <tr
-                                            key={inc.incident_id}
-                                            style={{ borderBottom: `1px solid ${HMS.cardBorder}` }}
-                                        >
-                                            <td css={tw`px-5 py-3.5 text-sm`} style={{ color: CloudUI.textSecondary }}>
+                        <>
+                            <DataTable
+                                headers={[
+                                    { key: 'start', label: 'Début', width: '22%' },
+                                    { key: 'end', label: 'Fin', width: '22%' },
+                                    { key: 'type', label: 'Type', width: '22%' },
+                                    { key: 'bps', label: 'Débit', width: '18%' },
+                                    { key: 'act', label: '', width: '16%', align: 'right' },
+                                ]}
+                            >
+                                {relatedIncidents.map((inc) => (
+                                    <HoverRow key={inc.incident_id}>
+                                        <Td>
+                                            <span css={tw`text-sm`} style={{ color: CloudUI.textSecondary }}>
                                                 {formatWhen(inc.incident_start)}
-                                            </td>
-                                            <td css={tw`px-5 py-3.5 text-sm`} style={{ color: CloudUI.textSecondary }}>
+                                            </span>
+                                        </Td>
+                                        <Td>
+                                            <span css={tw`text-sm`} style={{ color: CloudUI.textSecondary }}>
                                                 {inc.incident_stop ? formatWhen(inc.incident_stop) : '—'}
-                                            </td>
-                                            <td css={tw`px-5 py-3.5`}>
-                                                <Badge tone={!inc.incident_stop ? 'danger' : 'warn'}>
-                                                    {!inc.incident_stop
-                                                        ? 'En cours'
-                                                        : inc.attack_type || inc.diversion_reason || 'Attaque'}
+                                            </span>
+                                        </Td>
+                                        <Td>
+                                            {!inc.incident_stop ? (
+                                                <Badge tone="danger">En cours</Badge>
+                                            ) : (
+                                                <Badge tone="warn">
+                                                    {inc.attack_type || inc.diversion_reason || 'Attaque'}
                                                 </Badge>
-                                            </td>
-                                            <td css={tw`px-5 py-3.5 text-sm`} style={{ color: CloudUI.textSecondary }}>
+                                            )}
+                                        </Td>
+                                        <Td>
+                                            <span css={tw`text-sm tabular-nums`} style={{ color: CloudUI.textSecondary }}>
                                                 {inc.max_bps_formattet || '—'}
-                                            </td>
-                                            <td css={tw`px-5 py-3.5 text-right`}>
-                                                <Link
-                                                    to={`/network/ddos?ip=${encodeURIComponent(row.ip)}&incident=${encodeURIComponent(inc.incident_id)}`}
-                                                    css={tw`text-sm font-semibold no-underline`}
-                                                    style={{ color: CloudUI.accentHover }}
-                                                >
-                                                    Voir l&apos;attaque
-                                                </Link>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
+                                            </span>
+                                        </Td>
+                                        <Td align="right">
+                                            <GhostLink
+                                                compact
+                                                to={`/network/ddos?ip=${encodeURIComponent(row.ip)}&incident=${encodeURIComponent(inc.incident_id)}`}
+                                            >
+                                                Voir
+                                            </GhostLink>
+                                        </Td>
+                                    </HoverRow>
+                                ))}
+                            </DataTable>
+                            <div css={tw`lg:hidden px-4 py-4 space-y-3`}>
+                                {relatedIncidents.map((inc) => (
+                                    <div
+                                        key={inc.incident_id}
+                                        css={tw`rounded-xl p-4 space-y-2`}
+                                        style={{ border: `1px solid ${HMS.cardBorder}` }}
+                                    >
+                                        <div css={tw`flex items-center justify-between gap-2`}>
+                                            {!inc.incident_stop ? (
+                                                <Badge tone="danger">En cours</Badge>
+                                            ) : (
+                                                <Badge tone="warn">
+                                                    {inc.attack_type || inc.diversion_reason || 'Attaque'}
+                                                </Badge>
+                                            )}
+                                            <span css={tw`text-sm tabular-nums`} style={{ color: CloudUI.textSecondary }}>
+                                                {inc.max_bps_formattet || '—'}
+                                            </span>
+                                        </div>
+                                        <p css={tw`m-0 text-sm`} style={{ color: CloudUI.textMuted }}>
+                                            {formatWhen(inc.incident_start)}
+                                            {inc.incident_stop ? ` → ${formatWhen(inc.incident_stop)}` : ''}
+                                        </p>
+                                        <GhostLink
+                                            fullWidth
+                                            to={`/network/ddos?ip=${encodeURIComponent(row.ip)}&incident=${encodeURIComponent(inc.incident_id)}`}
+                                        >
+                                            Voir l&apos;attaque
+                                        </GhostLink>
+                                    </div>
+                                ))}
+                            </div>
+                        </>
                     )}
                 </Panel>
             ) : null}
