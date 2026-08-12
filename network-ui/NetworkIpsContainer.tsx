@@ -297,7 +297,7 @@ function IpListView({
         </div>
       </div>
 
-      <DigiCard padding="md">
+      <DigiCard>
         <div className="mb-4 flex justify-end">
           <DigiButton type="button" onClick={onOrderClick}>
             <FontAwesomeIcon icon={faPlus} className="h-4 w-4" />
