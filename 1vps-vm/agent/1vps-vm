@@ -1,0 +1,888 @@
+#!/usr/bin/env bash
+# 1vps-vm — self-hosted KVM agent (LumenVM replacement)
+# Relies on host stack:
+#   - /usr/bin/qemu-system-x86_64 wrapper → TAP + virtio-net + DHCP 10.0.2.15
+#   - lumen-autoballoon (QMP) for RAM reclaim
+#   - lumen-dedicated-ip-forward for public IP → container DNAT/SNAT
+# Images: Hetzner S3 only (public HTTP or private rclone). No Lumen API.
+set -euo pipefail
+
+VERSION="0.8.1"
+HOME_DIR="${HOME_DIR:-/home/container}"
+CACHE_DIR="${CACHE_DIR:-/opt/1vps/lumenvm-net/vm-images}"
+VIRTIO_DIR="${VIRTIO_DIR:-/opt/1vps/lumenvm-net/virtio}"
+WORKDIR="${HOME_DIR}"
+cd "$WORKDIR"
+
+log()  { printf ' \033[32m●\033[37m %s\033[0m\n' "$*"; }
+info() { printf ' \033[34m●\033[37m %s\033[0m\n' "$*"; }
+err()  { printf ' \033[31m●\033[37m %s\033[0m\n' "$*" >&2; }
+step() { info "[$1] $2"; }
+
+banner() {
+  printf '\033[36m'
+  cat <<'EOF'
+
+   ██╗ ██╗   ██╗██████╗ ███████╗
+  ███║ ██║   ██║██╔══██╗██╔════╝
+  ╚██║ ██║   ██║██████╔╝███████╗
+   ██║ ╚██╗ ██╔╝██╔═══╝ ╚════██║
+   ██║  ╚████╔╝ ██║     ███████║
+   ╚═╝   ╚═══╝  ╚═╝     ╚══════╝
+           self-hosted kvm
+
+EOF
+  printf '\033[0m'
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || { err "missing command: $1"; exit 1; }
+}
+
+# Normalize OS id from image ENV / tag (e.g. 1vps-debian-12 → debian-12)
+VM_OS="${VM_OS:-debian-12}"
+VM_OS="${VM_OS##*:}"
+VM_OS="${VM_OS#1vps-}"
+OS_PASSWORD="${OS_PASSWORD:-changeme}"
+OS_HOSTNAME="${OS_HOSTNAME:-1vpsvm}"
+OS_PUBKEY="${OS_PUBKEY:-}"
+OS_DISKSIZE="${OS_DISKSIZE:-50}"
+SERVER_MEMORY="${SERVER_MEMORY:-2048}"
+SERVER_DISK="${SERVER_DISK:-}"
+SERVER_IP="${SERVER_IP:-}"
+ADDITIONAL_PORTS="${ADDITIONAL_PORTS:-}"
+UEFI="${UEFI:-0}"
+PACKAGE_UPDATE="${PACKAGE_UPDATE:-0}"
+DISPLAY_MODE="${DISPLAY_MODE:-ssh}"
+P_SERVER_UUID="${P_SERVER_UUID:-unknown}"
+FORCE_PROVISION="${FORCE_PROVISION:-0}"
+READY_TIMEOUT="${READY_TIMEOUT:-180}"
+QEMU_MEM_OVERHEAD="${QEMU_MEM_OVERHEAD:-}"
+# Hot-plug ceiling (MiB). Guest boots at qemu_memory_mib(); panel can grow up to this via QMP.
+QEMU_MAXMEM_MIB="${QEMU_MAXMEM_MIB:-131072}"
+QEMU_MEM_SLOTS="${QEMU_MEM_SLOTS:-16}"
+# Optional host-path ISOs (mounted read-only into the container by Wings/bind or host wrapper).
+VIRTIO_WIN_ISO="${VIRTIO_WIN_ISO:-${VIRTIO_DIR}/virtio-win.iso}"
+BALLOON_SETUP_ISO="${BALLOON_SETUP_ISO:-${VIRTIO_DIR}/balloon-setup.iso}"
+RESCUE_ISO="${RESCUE_ISO:-}"
+EXTRA_ISO="${EXTRA_ISO:-}"
+ATTACH_VIRTIO_ISO="${ATTACH_VIRTIO_ISO:-auto}"
+
+DISK_FILE="${WORKDIR}/${VM_OS}.qcow2"
+SEED_ISO="${WORKDIR}/.1vps-seed.iso"
+CIDATA_DIR="${WORKDIR}/.1vps-cidata"
+STATE_FILE="${WORKDIR}/.1vps-vm-state"
+SERIAL_LOG="${WORKDIR}/serial.log"
+NOVNC_LOG="${WORKDIR}/novnc.log"
+
+VM_IMAGE_BASE="${VM_IMAGE_BASE:-https://fsn1.your-objectstorage.com/1vps-vm-images}"
+S3_REMOTE="${S3_REMOTE:-hetzner:1vps-vm-images}"
+RCLONE_BIN="${RCLONE_BIN:-/opt/1vps/lumenvm-net/bin/rclone}"
+RCLONE_CONFIG="${RCLONE_CONFIG:-/opt/1vps/lumenvm-net/rclone/rclone.conf}"
+
+VNC_PORT="${VNC_PORT:-5900}"
+NOVNC_PORT="${NOVNC_PORT:-6080}"
+SPICE_PORT="${SPICE_PORT:-5901}"
+
+SUPPORTED_LINUX=(
+  debian-10 debian-11 debian-12 debian-13
+  ubuntu-18 ubuntu-20 ubuntu-22 ubuntu-24
+  fedora-40 rockylinux almalinux alpine archlinux
+  kali-desktop debian-12-desktop ubuntu-24-desktop
+)
+
+SUPPORTED_WINDOWS=(
+  windows-2022-desktop windows-10-desktop windows-7-desktop redstar-desktop
+)
+
+is_windows_os() {
+  case "$1" in
+    windows-*|redstar-desktop) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_private_s3_os() {
+  is_windows_os "$1"
+}
+
+is_display_port() {
+  case "$1" in
+    5900|5901|6080|"$VNC_PORT"|"$NOVNC_PORT"|"$SPICE_PORT") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+display_mode_norm() {
+  printf '%s' "$DISPLAY_MODE" | tr '[:upper:]' '[:lower:]'
+}
+
+image_url_for() {
+  local os="$1"
+  printf '%s/%s.qcow2' "${VM_IMAGE_BASE%/}" "$os"
+}
+
+# Panel injects SERVER_DISK / OS_DISKSIZE as MiB via EnvironmentService.
+# Values may be floats like "35786.000000". Manual GiB (<1024) still OK.
+normalize_disksize() {
+  local v="${OS_DISKSIZE}"
+  if [[ -z "$v" || "$v" == *"{{"* || "$v" == *"}}"* ]]; then
+    v="${SERVER_DISK:-${SERVER_DISKSIZE:-${P_SERVER_DISK:-}}}"
+  fi
+  if [[ -z "$v" || "$v" == *"{{"* || "$v" == *"}}"* ]]; then
+    err "Invalid OS_DISKSIZE=${OS_DISKSIZE} (unresolved). Need numeric MiB/GiB."
+    exit 1
+  fi
+  # Strip decimals / whitespace (Panel sometimes sends 35786.000000)
+  v="$(printf '%s' "$v" | tr -d '[:space:]')"
+  if [[ "$v" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    v="${v%%.*}"
+  else
+    err "Invalid OS_DISKSIZE=${OS_DISKSIZE}"
+    exit 1
+  fi
+  if [[ "$v" -ge 1024 ]]; then
+    v=$((v / 1024))
+    [[ "$v" -lt 1 ]] && v=1
+    info "OS_DISKSIZE from panel disk quota → ${v}G"
+  fi
+  [[ "$v" -lt 1 ]] && { err "Invalid disk size"; exit 1; }
+  OS_DISKSIZE="$v"
+}
+
+# Scale QEMU headroom with plan size (Wings cgroup == SERVER_MEMORY).
+qemu_memory_mib() {
+  local mem="${SERVER_MEMORY}" overhead
+  mem="${mem%%.*}"
+  if [[ -n "$QEMU_MEM_OVERHEAD" && "$QEMU_MEM_OVERHEAD" =~ ^[0-9]+$ ]]; then
+    overhead="$QEMU_MEM_OVERHEAD"
+  elif [[ "$mem" -le 2048 ]]; then
+    overhead=256
+  elif [[ "$mem" -le 4096 ]]; then
+    overhead=384
+  elif [[ "$mem" -le 8192 ]]; then
+    overhead=768
+  else
+    overhead=1024
+  fi
+  if [[ "$mem" =~ ^[0-9]+$ ]] && [[ "$mem" -gt $((overhead + 512)) ]]; then
+    echo $((mem - overhead))
+  else
+    echo "$mem"
+  fi
+}
+
+# Hot-plug ceiling: at least current guest RAM, never below SERVER_MEMORY.
+qemu_maxmem_mib() {
+  local mem max want
+  mem="$(qemu_memory_mib)"
+  max="${QEMU_MAXMEM_MIB%%.*}"
+  [[ "$max" =~ ^[0-9]+$ ]] || max=131072
+  want="$max"
+  if [[ "$SERVER_MEMORY" =~ ^[0-9]+$ ]] && (( SERVER_MEMORY > want )); then
+    want="$SERVER_MEMORY"
+  fi
+  if (( mem > want )); then
+    want="$mem"
+  fi
+  # QEMU requires maxmem >= size and room for slots (page-aligned).
+  echo "$want"
+}
+
+should_attach_virtio_iso() {
+  # Default off: host qemu-system-x86_64 wrapper already injects virtio-win + balloon-setup
+  # for Windows. Enabling here would exceed IDE CDROM slots and crash QEMU.
+  case "${ATTACH_VIRTIO_ISO,,}" in
+    1|true|yes|on) return 0 ;;
+    0|false|no|off|auto|*) return 1 ;;
+  esac
+}
+
+append_cdrom_isos() {
+  local -n _args=$1
+  local iso
+  if should_attach_virtio_iso; then
+    for iso in "$VIRTIO_WIN_ISO" "$BALLOON_SETUP_ISO"; do
+      [[ -n "$iso" && -f "$iso" ]] || continue
+      info "Attaching ISO $(basename "$iso")"
+      _args+=(-drive "file=${iso},media=cdrom,readonly=on")
+    done
+  fi
+  for iso in "$RESCUE_ISO" "$EXTRA_ISO"; do
+    [[ -n "$iso" && -f "$iso" ]] || continue
+    info "Attaching extra ISO $(basename "$iso")"
+    _args+=(-drive "file=${iso},media=cdrom,readonly=on")
+  done
+}
+
+is_valid_qcow() {
+  local f="$1"
+  [[ -f "$f" ]] || return 1
+  local sz
+  sz="$(stat -c%s "$f" 2>/dev/null || echo 0)"
+  # Fresh qcow2 overlays (backing-file provision) can be << 1 MiB — still valid.
+  [[ "$sz" -gt 256 ]] || return 1
+  qemu-img info "$f" >/dev/null 2>&1
+}
+
+refresh_checksums() {
+  local sums="${CACHE_DIR}/SHA256SUMS" url tmp
+  url="${VM_IMAGE_BASE%/}/SHA256SUMS"
+  tmp="${sums}.tmp"
+  mkdir -p "$CACHE_DIR"
+  if command -v curl >/dev/null 2>&1; then
+    curl -4 -fsSL --connect-timeout 10 -o "$tmp" "$url" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  else
+    wget -4 -q -O "$tmp" "$url" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  fi
+  [[ -s "$tmp" ]] && mv -f "$tmp" "$sums" || rm -f "$tmp"
+}
+
+verify_checksum() {
+  local os="$1" file="$2"
+  local sums="${CACHE_DIR}/SHA256SUMS" expected actual
+  [[ -f "$sums" ]] || return 0
+  expected=$(awk -v f="${os}.qcow2" '$2==f {print $1; exit}' "$sums")
+  [[ -n "$expected" ]] || return 0
+  step "…" "Verifying SHA256 for ${os}"
+  actual=$(sha256sum "$file" | awk '{print $1}')
+  if [[ "$actual" != "$expected" ]]; then
+    err "SHA256 mismatch for ${os} (expected ${expected:0:12}… got ${actual:0:12}…)"
+    return 1
+  fi
+  log "SHA256 OK (${actual:0:12}…)"
+  return 0
+}
+
+ARIA2_BIN="${ARIA2_BIN:-/opt/1vps/lumenvm-net/bin/aria2c}"
+# Parallelism knobs (Hetzner S3 loves many streams)
+S3_STREAMS="${S3_STREAMS:-16}"
+S3_CHUNK_SIZE="${S3_CHUNK_SIZE:-32M}"
+S3_BUFFER="${S3_BUFFER:-128M}"
+
+fetch_from_s3_public() {
+  local os="$1" tmp="$2"
+  local url
+  url="$(image_url_for "$os")"
+  info "Downloading ${os} from S3 (public, multi-stream)"
+  info "${url}"
+
+  # Prefer rclone HTTP multi-thread (same binary as private path)
+  if [[ -x "$RCLONE_BIN" ]]; then
+    "$RCLONE_BIN" copyurl "$url" "$tmp" \
+      --multi-thread-streams "$S3_STREAMS" \
+      --multi-thread-cutoff 64M \
+      --multi-thread-chunk-size "$S3_CHUNK_SIZE" \
+      --buffer-size "$S3_BUFFER" \
+      --retries 5 --low-level-retries 10 \
+      --stats 5s --stats-one-line \
+      --progress=false
+    return 0
+  fi
+
+  # aria2 multi-connection fallback
+  local aria=""
+  if [[ -x "$ARIA2_BIN" ]]; then
+    aria="$ARIA2_BIN"
+  elif command -v aria2c >/dev/null 2>&1; then
+    aria="$(command -v aria2c)"
+  fi
+  if [[ -n "$aria" ]]; then
+    "$aria" -c -x "$S3_STREAMS" -s "$S3_STREAMS" -k 1M \
+      --file-allocation=none --summary-interval=5 \
+      --max-tries=5 --retry-wait=2 --connect-timeout=30 \
+      --allow-overwrite=true --auto-file-renaming=false \
+      -d "$(dirname "$tmp")" -o "$(basename "$tmp")" "$url"
+    return 0
+  fi
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -4 -fL --retry 5 --retry-delay 2 --connect-timeout 30 --progress-bar -o "$tmp" "$url"
+  else
+    wget -4 -O "$tmp" "$url"
+  fi
+}
+
+fetch_from_s3_private() {
+  local os="$1" tmp="$2"
+  local remote="${S3_REMOTE%/}/${os}.qcow2"
+  [[ -x "$RCLONE_BIN" ]] || { err "rclone missing at ${RCLONE_BIN}"; exit 1; }
+  [[ -f "$RCLONE_CONFIG" ]] || { err "rclone config missing at ${RCLONE_CONFIG}"; exit 1; }
+  info "Downloading ${os} from S3 (private, ${S3_STREAMS} streams)"
+  info "${remote}"
+  "$RCLONE_BIN" --config "$RCLONE_CONFIG" copyto "$remote" "$tmp" \
+    --multi-thread-streams "$S3_STREAMS" \
+    --multi-thread-cutoff 64M \
+    --multi-thread-chunk-size "$S3_CHUNK_SIZE" \
+    --s3-chunk-size 64M \
+    --buffer-size "$S3_BUFFER" \
+    --transfers 1 --checkers 8 \
+    --retries 5 --low-level-retries 10 \
+    --stats 5s --stats-one-line \
+    --progress=false
+}
+
+# Materialize cache → server disk. Prefer qcow2 backing file (instant) over full copy.
+materialize_image() {
+  local cache="$1" dest="$2"
+  rm -f "$dest"
+  # Backing file: COW clone, nearly instant even for 12G Windows images.
+  if qemu-img create -f qcow2 -F qcow2 -b "$cache" "$dest" >/dev/null 2>&1; then
+    # Make backing path absolute so the VM still finds it if cwd changes
+    qemu-img rebase -f qcow2 -F qcow2 -b "$cache" -u "$dest" >/dev/null 2>&1 || true
+    log "Linked image (qcow2 backing → cache, fast provision)"
+    return 0
+  fi
+  info "Full copy to server directory (backing unavailable)"
+  if cp --reflink=auto -f "$cache" "$dest" 2>/dev/null; then
+    return 0
+  fi
+  cp -f "$cache" "$dest"
+}
+
+fetch_image() {
+  local os="$1" dest="$2"
+  local cache tmp known=0 x
+  mkdir -p "$CACHE_DIR"
+  cache="${CACHE_DIR}/${os}.qcow2"
+  tmp="${cache}.partial"
+
+  if is_windows_os "$os"; then
+    for x in "${SUPPORTED_WINDOWS[@]}"; do
+      [[ "$x" == "$os" ]] && known=1 && break
+    done
+    [[ "$known" -eq 1 ]] || { err "Unsupported Windows OS=${os}"; exit 1; }
+  else
+    for x in "${SUPPORTED_LINUX[@]}"; do
+      [[ "$x" == "$os" ]] && known=1 && break
+    done
+    [[ "$known" -eq 1 ]] || { err "Unsupported OS=${os} (not in S3 catalog)"; exit 1; }
+  fi
+
+  refresh_checksums
+
+  if is_valid_qcow "$cache"; then
+    if verify_checksum "$os" "$cache"; then
+      log "Using S3 cache ${cache} ($(du -h "$cache" | awk '{print $1}'))"
+      step "…" "Provisioning disk from cache"
+      materialize_image "$cache" "$dest"
+      return 0
+    fi
+    err "Dropping corrupt cache ${cache}"
+    rm -f "$cache"
+  fi
+
+  rm -f "$tmp"
+  # Prefer authenticated S3 API for everything when rclone is configured (faster + consistent)
+  if [[ -x "$RCLONE_BIN" && -f "$RCLONE_CONFIG" ]]; then
+    fetch_from_s3_private "$os" "$tmp" || {
+      if is_private_s3_os "$os"; then
+        exit 1
+      fi
+      fetch_from_s3_public "$os" "$tmp"
+    }
+  elif is_private_s3_os "$os"; then
+    fetch_from_s3_private "$os" "$tmp"
+  else
+    fetch_from_s3_public "$os" "$tmp"
+  fi
+
+  if ! is_valid_qcow "$tmp"; then
+    err "Downloaded file is not a valid disk image"
+    rm -f "$tmp"
+    exit 1
+  fi
+  if ! verify_checksum "$os" "$tmp"; then
+    rm -f "$tmp"
+    exit 1
+  fi
+  mv -f "$tmp" "$cache"
+  materialize_image "$cache" "$dest"
+  log "Image ready ($(du -h "$dest" | awk '{print $1}'))"
+}
+
+resize_disk() {
+  local f="$1" gb="$2"
+  local cur want
+  cur=$(qemu-img info --output=json "$f" | sed -n 's/.*"virtual-size": \([0-9]*\).*/\1/p' | head -1)
+  want=$((gb * 1024 * 1024 * 1024))
+  if [[ -n "$cur" && "$cur" -lt "$want" ]]; then
+    info "Resizing disk to ${gb}G"
+    qemu-img resize "$f" "${gb}G"
+  else
+    info "Disk size OK (≥ ${gb}G)"
+  fi
+}
+
+write_cidata_linux() {
+  rm -rf "$CIDATA_DIR"
+  mkdir -p "$CIDATA_DIR"
+
+  local iid="${P_SERVER_UUID}-$(date +%s)"
+  cat >"${CIDATA_DIR}/meta-data" <<EOF
+instance-id: ${iid}
+local-hostname: ${OS_HOSTNAME}
+EOF
+
+  cat >"${CIDATA_DIR}/network-config" <<'EOF'
+version: 2
+ethernets:
+  id0:
+    match:
+      name: "en*"
+    dhcp4: true
+    dhcp6: false
+  id1:
+    match:
+      name: "eth*"
+    dhcp4: true
+    dhcp6: false
+  id2:
+    match:
+      name: "ens*"
+    dhcp4: true
+    dhcp6: false
+EOF
+
+  {
+    echo '#cloud-config'
+    echo "hostname: ${OS_HOSTNAME}"
+    echo "manage_etc_hosts: true"
+    echo "ssh_pwauth: true"
+    echo "disable_root: false"
+    echo "chpasswd:"
+    echo "  expire: false"
+    echo "  list: |"
+    echo "    root:${OS_PASSWORD}"
+    if [[ "$PACKAGE_UPDATE" == "1" || "$PACKAGE_UPDATE" == "true" ]]; then
+      echo "package_update: true"
+      echo "package_upgrade: true"
+    else
+      echo "package_update: false"
+      echo "package_upgrade: false"
+    fi
+    if [[ -n "$OS_PUBKEY" ]]; then
+      echo "users:"
+      echo "  - name: root"
+      echo "    lock_passwd: false"
+      echo "    ssh_authorized_keys:"
+      echo "      - ${OS_PUBKEY}"
+    fi
+    cat <<'EOF'
+growpart:
+  mode: auto
+  devices: ["/"]
+runcmd:
+  - [ bash, -lc, "sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config || true" ]
+  - [ bash, -lc, "sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config || true" ]
+  - [ bash, -lc, "systemctl enable --now ssh 2>/dev/null || systemctl enable --now sshd 2>/dev/null || true" ]
+  - [ bash, -lc, "systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true" ]
+EOF
+  } >"${CIDATA_DIR}/user-data"
+
+  pack_cidata_iso
+  log "Cloud-init seed ready"
+}
+
+write_cidata_windows() {
+  rm -rf "$CIDATA_DIR"
+  mkdir -p "$CIDATA_DIR"
+
+  local iid="${P_SERVER_UUID}-$(date +%s)"
+  # Cloudbase-Init NoCloud + Unattend-style hints for preactivated images.
+  cat >"${CIDATA_DIR}/meta-data" <<EOF
+instance-id: ${iid}
+hostname: ${OS_HOSTNAME}
+local-hostname: ${OS_HOSTNAME}
+admin_pass: ${OS_PASSWORD}
+admin_username: Administrator
+EOF
+
+  cat >"${CIDATA_DIR}/user-data" <<EOF
+#cloud-config
+hostname: ${OS_HOSTNAME}
+set_hostname: true
+manage_windows_password: true
+users:
+  - name: Administrator
+    primary_group: Administrators
+    passwd: ${OS_PASSWORD}
+    inactive: false
+write_files:
+  - path: C:\\Windows\\Setup\\Scripts\\1vps-setpass.cmd
+    permissions: '0644'
+    content: |
+      @echo off
+      net user Administrator "${OS_PASSWORD}"
+      net user Administrator /active:yes
+runcmd:
+  - ['cmd.exe', '/c', 'net user Administrator "${OS_PASSWORD}"']
+  - ['cmd.exe', '/c', 'net user Administrator /active:yes']
+  - ['powershell.exe', '-Command', "Rename-Computer -NewName '${OS_HOSTNAME}' -Force -ErrorAction SilentlyContinue"]
+EOF
+
+  # Also drop a classic unattend fragment some images pick up from cidata
+  cat >"${CIDATA_DIR}/unattend.xml" <<EOF
+<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64"
+      publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <UserAccounts>
+        <AdministratorPassword>
+          <Value>${OS_PASSWORD}</Value>
+          <PlainText>true</PlainText>
+        </AdministratorPassword>
+      </UserAccounts>
+      <ComputerName>${OS_HOSTNAME}</ComputerName>
+    </component>
+  </settings>
+</unattend>
+EOF
+
+  : >"${CIDATA_DIR}/network-config"
+
+  pack_cidata_iso
+  log "Windows seed ready (password/hostname via Cloudbase-Init / unattend)"
+  info "Login: Administrator / (OS_PASSWORD). Needs Cloudbase-Init or setup scripts in image."
+}
+
+pack_cidata_iso() {
+  rm -f "$SEED_ISO"
+  local files=(
+    "user-data=${CIDATA_DIR}/user-data"
+    "meta-data=${CIDATA_DIR}/meta-data"
+    "network-config=${CIDATA_DIR}/network-config"
+  )
+  [[ -f "${CIDATA_DIR}/unattend.xml" ]] && files+=("unattend.xml=${CIDATA_DIR}/unattend.xml")
+
+  if command -v cloud-localds >/dev/null 2>&1 && [[ -s "${CIDATA_DIR}/network-config" ]]; then
+    cloud-localds --network-config "${CIDATA_DIR}/network-config" \
+      "$SEED_ISO" "${CIDATA_DIR}/user-data" "${CIDATA_DIR}/meta-data"
+  elif command -v genisoimage >/dev/null 2>&1; then
+    genisoimage -output "$SEED_ISO" -volid cidata -joliet -rock \
+      -graft-points "${files[@]}" >/dev/null 2>&1
+  elif command -v mkisofs >/dev/null 2>&1; then
+    mkisofs -output "$SEED_ISO" -volid cidata -joliet -rock \
+      -graft-points "${files[@]}" >/dev/null 2>&1
+  else
+    err "Need genisoimage/mkisofs/cloud-localds to build cidata ISO"
+    exit 1
+  fi
+}
+
+effective_ports() {
+  local raw="${ADDITIONAL_PORTS// /}"
+  local mode p cleaned=""
+  mode=$(display_mode_norm)
+  case "$mode" in
+    ssh)  raw="${raw:+$raw,}22" ;;
+    rdp)  raw="${raw:+$raw,}3389" ;;
+    both) raw="${raw:+$raw,}22,3389" ;;
+    vnc|novnc|spice)
+      if is_windows_os "$VM_OS"; then
+        raw="${raw:+$raw,}3389"
+      else
+        raw="${raw:+$raw,}22"
+      fi
+      ;;
+    none|"") ;;
+    *) ;;
+  esac
+  if [[ -z "$raw" ]]; then
+    if is_windows_os "$VM_OS"; then raw="3389"; else raw="22"; fi
+  fi
+  if is_windows_os "$VM_OS"; then
+    [[ ",${raw}," == *",3389,"* ]] || raw="${raw},3389"
+  else
+    [[ ",${raw}," == *",22,"* ]] || raw="${raw},22"
+  fi
+  IFS=',' read -ra parts <<<"$raw"
+  for p in "${parts[@]}"; do
+    [[ "$p" =~ ^[0-9]+$ ]] || continue
+    is_display_port "$p" && continue
+    cleaned="${cleaned:+$cleaned,}$p"
+  done
+  printf '%s' "$cleaned"
+}
+
+parse_ports() {
+  local raw
+  raw="$(effective_ports)"
+  IFS=',' read -ra parts <<<"$raw"
+  local p
+  for p in "${parts[@]}"; do
+    [[ "$p" =~ ^[0-9]+$ ]] || continue
+    printf '%s\n' "$p"
+  done | awk 'NF && !a[$0]++'
+}
+
+build_hostfwd() {
+  local fwd="" p
+  while read -r p; do
+    [[ -z "$p" ]] && continue
+    fwd+=",hostfwd=tcp::${p}-:${p}"
+    fwd+=",hostfwd=udp::${p}-:${p}"
+  done < <(parse_ports)
+  printf '%s' "$fwd"
+}
+
+smp_count() {
+  local n
+  n=$(nproc 2>/dev/null || echo 2)
+  [[ "$n" -ge 1 ]] || n=1
+  [[ "$n" -gt 32 ]] && n=32
+  echo "$n"
+}
+
+find_ovmf() {
+  local ovmf
+  for ovmf in \
+    /usr/share/OVMF/OVMF_CODE_4M.fd \
+    /usr/share/OVMF/OVMF_CODE.fd \
+    /opt/1vps/lumenvm-net/ovmf/OVMF_CODE_4M.fd \
+    /opt/1vps/lumenvm-net/ovmf/OVMF_CODE.fd \
+    /OVMF.fd
+  do
+    [[ -f "$ovmf" ]] && { printf '%s' "$ovmf"; return 0; }
+  done
+  return 1
+}
+
+start_novnc_proxy() {
+  local ws
+  ws="$(command -v websockify || true)"
+  [[ -n "$ws" ]] || { err "websockify missing — cannot start noVNC"; return 1; }
+  [[ -d /usr/share/novnc ]] || { err "/usr/share/novnc missing"; return 1; }
+  : >"$NOVNC_LOG"
+  setsid "$ws" --web=/usr/share/novnc \
+    "0.0.0.0:${NOVNC_PORT}" "127.0.0.1:${VNC_PORT}" \
+    >>"$NOVNC_LOG" 2>&1 </dev/null &
+  disown $! 2>/dev/null || true
+  sleep 0.3
+  log "noVNC proxy on :${NOVNC_PORT} → 127.0.0.1:${VNC_PORT}"
+}
+
+announce_display() {
+  local mode ip
+  mode=$(display_mode_norm)
+  ip="${SERVER_IP:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
+  case "$mode" in
+    vnc)   log "VNC: ${ip}:${VNC_PORT}" ;;
+    novnc) log "noVNC: http://${ip}:${NOVNC_PORT}/vnc.html" ;;
+    spice) log "SPICE: ${ip}:${SPICE_PORT}" ;;
+    *)     log "Guest access via SSH/RDP on ${ip:-dedicated IP}" ;;
+  esac
+}
+
+apply_display_args() {
+  local mode
+  mode=$(display_mode_norm)
+  case "$mode" in
+    vnc)
+      DISPLAY_ARGS+=(-vga std)
+      if [[ -n "$OS_PASSWORD" ]]; then
+        DISPLAY_ARGS+=(-object "secret,id=secv0,data=${OS_PASSWORD}")
+        DISPLAY_ARGS+=(-vnc "0.0.0.0:$((VNC_PORT - 5900)),password-secret=secv0")
+      else
+        DISPLAY_ARGS+=(-vnc "0.0.0.0:$((VNC_PORT - 5900))")
+      fi
+      ;;
+    novnc)
+      DISPLAY_ARGS+=(-vga std)
+      DISPLAY_ARGS+=(-vnc "127.0.0.1:$((VNC_PORT - 5900))")
+      start_novnc_proxy || true
+      ;;
+    spice)
+      DISPLAY_ARGS+=(-vga qxl)
+      DISPLAY_ARGS+=(-spice "port=${SPICE_PORT},addr=0.0.0.0,disable-ticketing=on")
+      DISPLAY_ARGS+=(-device virtio-serial-pci)
+      ;;
+  esac
+}
+
+# Background: poll guest until SSH/RDP answers, then log ready.
+wait_guest_ready() {
+  local deadline=$((SECONDS + READY_TIMEOUT))
+  local port=22 probe="10.0.2.15"
+  is_windows_os "$VM_OS" && port=3389
+  info "Waiting for guest ready (tcp ${probe}:${port}, timeout ${READY_TIMEOUT}s)…"
+  while (( SECONDS < deadline )); do
+    if timeout 1 bash -c "echo >/dev/tcp/${probe}/${port}" 2>/dev/null; then
+      log "Guest READY — ${probe}:${port} open"
+      [[ -n "$SERVER_IP" ]] && log "Public: ${SERVER_IP}:${port}"
+      return 0
+    fi
+    # ICMP as soft signal
+    ping -c1 -W1 "$probe" >/dev/null 2>&1 || true
+    sleep 3
+  done
+  err "Guest not ready after ${READY_TIMEOUT}s (still booting?). Check ${SERVER_IP:-IP}:${port}"
+  return 0
+}
+
+boot_vm() {
+  info "Booting ${VM_OS}"
+  local mem maxmem smp hostfwd lip mode SERIAL_ARG
+  mem="$(qemu_memory_mib)"
+  maxmem="$(qemu_maxmem_mib)"
+  if [[ "$mem" != "$SERVER_MEMORY" ]]; then
+    info "Guest RAM ${mem}M (SERVER_MEMORY=${SERVER_MEMORY}M, QEMU headroom reserved)"
+  fi
+  if (( maxmem > mem )); then
+    info "Hot-RAM ceiling maxmem=${maxmem}M slots=${QEMU_MEM_SLOTS}"
+  fi
+  smp=$(smp_count)
+  hostfwd=$(build_hostfwd)
+  mode=$(display_mode_norm)
+  lip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  [[ -n "$lip" ]] && log "Container IP ${lip}"
+  log "Guest port forwards (TAP DNAT): $(effective_ports)"
+  info "DISPLAY_MODE=${mode}"
+
+  mkdir -p "${WORKDIR}/shared"
+
+  DISPLAY_ARGS=()
+  apply_display_args
+  announce_display
+
+  : >"${SERIAL_LOG}"
+  SERIAL_ARG="file:${SERIAL_LOG}"
+  if [[ "${CONSOLE_STDIO:-0}" == "1" && -t 1 ]]; then
+    SERIAL_ARG="stdio"
+  else
+    ( tail -n0 -F "${SERIAL_LOG}" 2>/dev/null & )
+  fi
+
+  local mem_arg="${mem}M"
+  if (( maxmem > mem )); then
+    mem_arg="size=${mem}M,slots=${QEMU_MEM_SLOTS},maxmem=${maxmem}M"
+  fi
+
+  local args=(
+    -name "1vps-${P_SERVER_UUID}"
+    -m "${mem_arg}"
+    -smp "$smp"
+    -cpu host
+    -enable-kvm
+    -display none
+    -serial "${SERIAL_ARG}"
+    -usb -device usb-tablet
+    -smbios "type=1,manufacturer=1VPS,product=1vps-vm,version=${VERSION},serial=${P_SERVER_UUID}"
+    -virtfs "local,path=${WORKDIR}/shared,mount_tag=shared,security_model=none"
+    -netdev "user,id=net0${hostfwd}"
+    -device "virtio-net-pci,netdev=net0"
+    -device "virtio-balloon"
+  )
+  args+=("${DISPLAY_ARGS[@]+"${DISPLAY_ARGS[@]}"}")
+
+  if is_windows_os "$VM_OS"; then
+    args+=(-drive "file=${DISK_FILE},format=qcow2")
+    [[ -f "$SEED_ISO" ]] && args+=(-drive "file=${SEED_ISO},media=cdrom,readonly=on")
+  else
+    args+=(
+      -drive "file=${DISK_FILE},format=qcow2,if=virtio,cache=writeback,discard=unmap"
+      -drive "file=${SEED_ISO},media=cdrom,readonly=on"
+    )
+  fi
+  append_cdrom_isos args
+
+  if [[ "$UEFI" == "1" ]]; then
+    local ovmf
+    if ovmf=$(find_ovmf); then
+      info "UEFI firmware: ${ovmf}"
+      args+=(-drive "if=pflash,format=raw,readonly=on,file=${ovmf}")
+    else
+      err "UEFI=1 but no OVMF firmware found — booting SeaBIOS"
+    fi
+  fi
+
+  {
+    echo "booted_at=$(date -Is)"
+    echo "os=${VM_OS}"
+    echo "version=${VERSION}"
+    echo "server_ip=${SERVER_IP}"
+    echo "disk_gb=${OS_DISKSIZE}"
+    echo "display_mode=${mode}"
+    echo "guest_ram_mib=${mem}"
+    echo "maxmem_mib=${maxmem}"
+    echo "mem_slots=${QEMU_MEM_SLOTS}"
+    echo "vnc_port=${VNC_PORT}"
+    echo "novnc_port=${NOVNC_PORT}"
+    echo "spice_port=${SPICE_PORT}"
+  } >"$STATE_FILE"
+
+  info "Lancement de 1vps-vm ${VERSION}"
+  # Do not exec: wait for guest ready in parallel, then wait on QEMU.
+  qemu-system-x86_64 "${args[@]}" &
+  local qpid=$!
+  wait_guest_ready &
+  local wpid=$!
+  wait "$qpid"
+  local rc=$?
+  kill "$wpid" 2>/dev/null || true
+  wait "$wpid" 2>/dev/null || true
+  exit "$rc"
+}
+
+main() {
+  banner
+  need_cmd qemu-system-x86_64
+  need_cmd qemu-img
+
+  step "1/5" "Disk quota"
+  normalize_disksize
+
+  log "Checking the current installation."
+  info "OS=${VM_OS} disk=${OS_DISKSIZE}G mem=${SERVER_MEMORY}M ip=${SERVER_IP:-n/a} mode=${DISPLAY_MODE}"
+
+  if [[ -e "$DISK_FILE" ]] && ! is_valid_qcow "$DISK_FILE"; then
+    err "Removing invalid disk ${DISK_FILE}"
+    rm -f "$DISK_FILE"
+  fi
+  local stub
+  for stub in "${WORKDIR}"/*.qcow2; do
+    [[ -e "$stub" ]] || continue
+    if ! is_valid_qcow "$stub"; then
+      err "Removing invalid stub $(basename "$stub")"
+      rm -f "$stub"
+    fi
+  done
+
+  if [[ "$FORCE_PROVISION" == "1" ]]; then
+    rm -f "$DISK_FILE" "$SEED_ISO"
+    rm -rf "$CIDATA_DIR"
+  fi
+
+  step "2/5" "OS image (S3)"
+  local first_boot=0
+  if ! is_valid_qcow "$DISK_FILE"; then
+    first_boot=1
+    fetch_image "$VM_OS" "$DISK_FILE"
+  else
+    log "Existing disk found ($(du -h "$DISK_FILE" | awk '{print $1}'))"
+  fi
+
+  step "3/5" "Resize disk"
+  resize_disk "$DISK_FILE" "$OS_DISKSIZE"
+
+  step "4/5" "Provisioning"
+  if is_windows_os "$VM_OS"; then
+    if [[ "$first_boot" -eq 1 || ! -f "$SEED_ISO" || "$FORCE_PROVISION" == "1" ]]; then
+      info "Provisioning Windows seed (password/hostname)."
+      write_cidata_windows
+    else
+      log "Windows seed already present"
+    fi
+  elif [[ "$first_boot" -eq 1 || ! -f "$SEED_ISO" ]]; then
+    info "Provisioning cloud-init."
+    write_cidata_linux
+  else
+    log "Cloud-init seed already present"
+  fi
+
+  step "5/5" "Boot"
+  boot_vm
+}
+
+main "$@"

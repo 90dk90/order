@@ -1,0 +1,160 @@
+#!/bin/bash
+# 1vps-vm QEMU wrapper: TAP net + balloon/QMP helpers
+# Display ports (VNC/noVNC/SPICE) stay in the container — never DNAT to guest.
+set -euo pipefail
+ROOT=/opt/1vps/lumenvm-net
+REAL="$ROOT/qemu-system-x86_64.real"
+FLAG="$ROOT/ENABLED"
+LOG="$ROOT/wrapper.log"
+IPT="$ROOT/bin/iptables"
+DHCP_PY="$ROOT/bin/lumen-dhcp.py"
+
+# QEMU/websockify listen in the container netns — must not DNAT to 10.0.2.15
+is_container_local_port() {
+  case "$1" in
+    5900|5901|6080) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+log() { echo "[$(date -Is)] $*" >>"$LOG" 2>/dev/null || true; }
+
+prepare_datadir() {
+  local d="/tmp/qemu-fw-lumen"
+  if [[ ! -e "$d/.ready" ]]; then
+    mkdir -p "$d"
+    ln -sft "$d" /usr/share/qemu/* 2>/dev/null || true
+    ln -sft "$d" /usr/share/seabios/* 2>/dev/null || true
+    ln -sft "$d" /usr/lib/ipxe/qemu/* 2>/dev/null || true
+    touch "$d/.ready"
+  fi
+  echo "$d"
+}
+
+# Add balloon options + QMP + optional VirtIO ISO. Does NOT touch networking.
+finish_qemu() {
+  local args=("$@") out=() i=0 has_balloon=0 is_windows=0
+  for a in "${args[@]}"; do
+    [[ "$a" == *windows* || "$a" == *Windows* || "$a" == *redstar* || "$a" == *Redstar* ]] && is_windows=1
+  done
+  while (( i < ${#args[@]} )); do
+    a="${args[$i]}"
+    if [[ "$a" == "-device" ]]; then
+      next="${args[$((i+1))]:-}"
+      if [[ "$next" == virtio-balloon* ]]; then
+        has_balloon=1
+        out+=("-device" "virtio-balloon,free-page-reporting=on,deflate-on-oom=on,guest-stats-polling-interval=10")
+        ((i+=2)) || true
+        continue
+      fi
+    fi
+    out+=("$a"); ((i++)) || true
+  done
+  [[ "$has_balloon" -eq 0 ]] && out+=("-device" "virtio-balloon,free-page-reporting=on,deflate-on-oom=on,guest-stats-polling-interval=10")
+  HN=$(hostname 2>/dev/null || true)
+  if [[ -n "$HN" ]]; then
+    mkdir -p "$ROOT/qmp"
+    rm -f "$ROOT/qmp/${HN}.sock"
+    out+=("-qmp" "unix:${ROOT}/qmp/${HN}.sock,server=on,wait=off")
+  fi
+  # Windows: attach at most one extra host ISO (IDE CDROM slots are limited:
+  # seed/cidata already uses one). Prefer virtio-win drivers over balloon-setup.
+  has_drive_file() {
+    local needle="$1" a
+    for a in "${out[@]}"; do
+      [[ "$a" == *"$needle"* ]] && return 0
+    done
+    return 1
+  }
+  if [[ "$is_windows" -eq 1 ]]; then
+    if [[ -f "$ROOT/virtio/virtio-win.iso" ]] && ! has_drive_file "virtio-win.iso"; then
+      out+=("-drive" "file=${ROOT}/virtio/virtio-win.iso,media=cdrom,readonly=on")
+    elif [[ -f "$ROOT/virtio/balloon-setup.iso" ]] && ! has_drive_file "balloon-setup.iso"; then
+      out+=("-drive" "file=${ROOT}/virtio/balloon-setup.iso,media=cdrom,readonly=on")
+    fi
+  fi
+  if [[ -n "${RESCUE_ISO:-}" && -f "${RESCUE_ISO}" ]] && ! has_drive_file "$RESCUE_ISO"; then
+    out+=("-drive" "file=${RESCUE_ISO},media=cdrom,readonly=on")
+  fi
+  local L; L=$(prepare_datadir)
+  exec "$REAL" -L "$L" "${out[@]}"
+}
+
+HN=$(hostname 2>/dev/null || true)
+ENABLED=0
+[[ -f "$FLAG" ]] && ENABLED=1
+[[ -n "$HN" && -f "$ROOT/enabled.d/$HN" ]] && ENABLED=1
+
+if [[ "$ENABLED" -ne 1 ]] || [[ ! -x "$REAL" ]] || [[ ! -x "$IPT" ]]; then
+  finish_qemu "$@"
+fi
+
+log "TAP enabled for host=$HN"
+trap 'log "TAP setup failed line=$LINENO rc=$?"; finish_qemu "$@"' ERR
+
+args=("$@")
+tcp_ports=(); udp_ports=(); new_args=(); i=0
+while (( i < ${#args[@]} )); do
+  a="${args[$i]}"
+  if [[ "$a" == "-net" || "$a" == "-netdev" ]]; then
+    ((i++)) || true
+    spec="${args[$i]:-}"
+    if [[ "$spec" == nic* || "$spec" == user* || "$spec" == tap* || "$spec" == stream* || "$spec" == hubport* ]]; then
+      if [[ "$spec" == user* ]]; then
+        IFS=',' read -ra parts <<< "$spec"
+        for p in "${parts[@]}"; do
+          [[ "$p" =~ ^hostfwd=tcp::([0-9]+)-:([0-9]+)$ ]] && tcp_ports+=("${BASH_REMATCH[1]}")
+          [[ "$p" =~ ^hostfwd=udp::([0-9]+)-:([0-9]+)$ ]] && udp_ports+=("${BASH_REMATCH[1]}")
+        done
+      fi
+      ((i++)) || true
+      continue
+    fi
+    new_args+=("$a" "$spec"); ((i++)) || true; continue
+  fi
+  if [[ "$a" == "-device" ]]; then
+    next="${args[$((i+1))]:-}"
+    if [[ "$next" == virtio-net-pci* || "$next" == virtio-net,* ]]; then
+      ((i+=2)) || true; continue
+    fi
+  fi
+  new_args+=("$a"); ((i++)) || true
+done
+
+uniq_ports() { local -n arr=$1; printf "%s\n" "${arr[@]:-}" | awk 'NF && !a[$0]++'; }
+
+export LD_LIBRARY_PATH="$ROOT/lib-ipt${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export XTABLES_LIBDIR="$ROOT/xtables"
+TAP=tap0
+ip link show "$TAP" >/dev/null 2>&1 || ip tuntap add name "$TAP" mode tap
+ip addr flush dev "$TAP" 2>/dev/null || true
+ip addr add 10.0.2.2/24 dev "$TAP"
+ip link set "$TAP" up
+{ echo 1 > /proc/sys/net/ipv4/ip_forward; } >/dev/null 2>&1 || true
+"$IPT" -t nat -C POSTROUTING -s 10.0.2.0/24 ! -o "$TAP" -j MASQUERADE 2>/dev/null \
+  || "$IPT" -t nat -A POSTROUTING -s 10.0.2.0/24 ! -o "$TAP" -j MASQUERADE
+"$IPT" -C FORWARD -i "$TAP" -j ACCEPT 2>/dev/null || "$IPT" -A FORWARD -i "$TAP" -j ACCEPT
+"$IPT" -C FORWARD -o "$TAP" -j ACCEPT 2>/dev/null || "$IPT" -A FORWARD -o "$TAP" -j ACCEPT
+while read -r p; do
+  [[ -z "$p" ]] && continue
+  if is_container_local_port "$p"; then
+    log "skip DNAT for container-local display port $p"
+    continue
+  fi
+  "$IPT" -t nat -C PREROUTING -i eth0 -p tcp --dport "$p" -j DNAT --to-destination 10.0.2.15:"$p" 2>/dev/null \
+    || "$IPT" -t nat -A PREROUTING -i eth0 -p tcp --dport "$p" -j DNAT --to-destination 10.0.2.15:"$p"
+done < <(uniq_ports tcp_ports)
+while read -r p; do
+  [[ -z "$p" ]] && continue
+  is_container_local_port "$p" && continue
+  "$IPT" -t nat -C PREROUTING -i eth0 -p udp --dport "$p" -j DNAT --to-destination 10.0.2.15:"$p" 2>/dev/null \
+    || "$IPT" -t nat -A PREROUTING -i eth0 -p udp --dport "$p" -j DNAT --to-destination 10.0.2.15:"$p"
+done < <(uniq_ports udp_ports)
+setsid python3 "$DHCP_PY" "$TAP" >>"$LOG" 2>&1 </dev/null &
+disown $! 2>/dev/null || true
+sleep 0.2
+new_args+=(-netdev "tap,id=lumennet0,ifname=$TAP,script=no,downscript=no")
+new_args+=(-device "virtio-net-pci,netdev=lumennet0,romfile=")
+log "exec qemu TAP+balloon host=$HN"
+trap - ERR
+finish_qemu "${new_args[@]}"
