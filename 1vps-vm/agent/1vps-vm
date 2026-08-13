@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # 1vps-vm — self-hosted KVM agent (LumenVM replacement)
-# Same Wings/Jexactyl env contract; downloads from official mirrors only.
+# Relies on host stack:
+#   - /usr/bin/qemu-system-x86_64 wrapper → TAP + virtio-net + DHCP 10.0.2.15
+#   - lumen-autoballoon (QMP) for RAM reclaim
+#   - lumen-dedicated-ip-forward for public IP → container DNAT/SNAT
+# No api.lumenvm.cloud — official mirrors / local cache only.
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.1.1"
 HOME_DIR="${HOME_DIR:-/home/container}"
 CACHE_DIR="${CACHE_DIR:-/opt/1vps/lumenvm-net/vm-images}"
 WORKDIR="${HOME_DIR}"
@@ -47,6 +51,7 @@ DISK_FILE="${WORKDIR}/${VM_OS}.qcow2"
 SEED_ISO="${WORKDIR}/.1vps-seed.iso"
 CIDATA_DIR="${WORKDIR}/.1vps-cidata"
 STATE_FILE="${WORKDIR}/.1vps-vm-state"
+SERIAL_LOG="${WORKDIR}/serial.log"
 
 declare -A IMAGE_URLS=(
   [debian-10]="https://cloud.debian.org/images/cloud/buster/latest/debian-10-genericcloud-amd64.qcow2"
@@ -120,17 +125,31 @@ write_cidata() {
   rm -rf "$CIDATA_DIR"
   mkdir -p "$CIDATA_DIR"
 
+  # Unique instance-id so cloud-init re-runs after reprovision
+  local iid="${P_SERVER_UUID}-$(date +%s)"
   cat >"${CIDATA_DIR}/meta-data" <<EOF
-instance-id: ${P_SERVER_UUID}
+instance-id: ${iid}
 local-hostname: ${OS_HOSTNAME}
 EOF
 
+  # Netplan match must be ONE pattern per ethernet stanza.
+  # Broken "en* ens* eth*" left the NIC unconfigured (0 packets on tap0).
   cat >"${CIDATA_DIR}/network-config" <<'EOF'
 version: 2
 ethernets:
   id0:
     match:
-      name: "en* ens* eth*"
+      name: "en*"
+    dhcp4: true
+    dhcp6: false
+  id1:
+    match:
+      name: "eth*"
+    dhcp4: true
+    dhcp6: false
+  id2:
+    match:
+      name: "ens*"
     dhcp4: true
     dhcp6: false
 EOF
@@ -145,9 +164,7 @@ EOF
     echo "  expire: false"
     echo "  list: |"
     echo "    root:${OS_PASSWORD}"
-    if [[ "$PACKAGE_UPDATE" == "1" ]]; then
-      echo "package_update: true"
-    fi
+    # Never package_update during cloud-init first boot (blocks SSH if net flaky).
     if [[ -n "$OS_PUBKEY" ]]; then
       echo "users:"
       echo "  - name: root"
@@ -162,6 +179,7 @@ growpart:
 runcmd:
   - [ bash, -lc, "sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config || true" ]
   - [ bash, -lc, "sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config || true" ]
+  - [ bash, -lc, "systemctl enable --now ssh 2>/dev/null || systemctl enable --now sshd 2>/dev/null || true" ]
   - [ bash, -lc, "systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true" ]
 EOF
   } >"${CIDATA_DIR}/user-data"
@@ -171,8 +189,12 @@ EOF
     cloud-localds --network-config "${CIDATA_DIR}/network-config" \
       "$SEED_ISO" "${CIDATA_DIR}/user-data" "${CIDATA_DIR}/meta-data"
   else
+    # NoCloud requires volume id "cidata"
     genisoimage -output "$SEED_ISO" -volid cidata -joliet -rock \
-      "${CIDATA_DIR}/user-data" "${CIDATA_DIR}/meta-data" "${CIDATA_DIR}/network-config" \
+      -graft-points \
+      "user-data=${CIDATA_DIR}/user-data" \
+      "meta-data=${CIDATA_DIR}/meta-data" \
+      "network-config=${CIDATA_DIR}/network-config" \
       >/dev/null 2>&1
   fi
   log "Cloud-init seed ready"
@@ -217,10 +239,16 @@ boot_vm() {
   hostfwd=$(build_hostfwd)
   lip=$(hostname -I 2>/dev/null | awk '{print $1}')
   [[ -n "$lip" ]] && log "The local ip adress is ${lip}"
-  log "Forwarding user ports."
+  log "Forwarding user ports (host wrapper replaces NIC → TAP)."
 
   mkdir -p "${WORKDIR}/shared"
+  : >"${SERIAL_LOG}"
 
+  # Pass user+hostfwd so the host qemu wrapper can:
+  #  1) strip user net / inject TAP+virtio-net-pci
+  #  2) install DNAT for forwarded ports
+  #  3) start lumen-dhcp (10.0.2.15)
+  #  4) add virtio-balloon + QMP for lumen-autoballoon
   local args=(
     -name "1vps-${P_SERVER_UUID}"
     -m "${mem}M"
@@ -228,13 +256,15 @@ boot_vm() {
     -cpu host
     -enable-kvm
     -display none
+    -serial "file:${SERIAL_LOG}"
     -usb -device usb-tablet
-    -drive "file=${DISK_FILE},format=qcow2,if=virtio,cache=writeback"
+    -drive "file=${DISK_FILE},format=qcow2,if=virtio,cache=writeback,discard=unmap"
     -drive "file=${SEED_ISO},media=cdrom,readonly=on"
     -smbios "type=1,manufacturer=1VPS,product=1vps-vm,version=${VERSION},serial=${P_SERVER_UUID}"
     -virtfs "local,path=${WORKDIR}/shared,mount_tag=shared,security_model=none"
     -netdev "user,id=net0${hostfwd}"
     -device "virtio-net-pci,netdev=net0"
+    -device "virtio-balloon"
   )
 
   if [[ "$UEFI" == "1" ]]; then
@@ -247,8 +277,13 @@ boot_vm() {
     done
   fi
 
-  echo "booted_at=$(date -Is)" >"$STATE_FILE"
-  echo "os=${VM_OS}" >>"$STATE_FILE"
+  {
+    echo "booted_at=$(date -Is)"
+    echo "os=${VM_OS}"
+    echo "version=${VERSION}"
+    echo "server_ip=${SERVER_IP}"
+  } >"$STATE_FILE"
+
   info "Lancement de 1vps-vm"
   exec qemu-system-x86_64 "${args[@]}"
 }
@@ -261,12 +296,10 @@ main() {
   log "Checking the current installation."
   info "OS=${VM_OS} disk=${OS_DISKSIZE}G mem=${SERVER_MEMORY}M ip=${SERVER_IP:-n/a}"
 
-  # Purge leftover empty/corrupt disks from LumenVM failed boots
   if [[ -e "$DISK_FILE" ]] && ! is_valid_qcow "$DISK_FILE"; then
     err "Removing invalid disk ${DISK_FILE}"
     rm -f "$DISK_FILE"
   fi
-  # Also wipe other leftover empty *.qcow2 stubs
   local stub
   for stub in "${WORKDIR}"/*.qcow2; do
     [[ -e "$stub" ]] || continue
@@ -276,11 +309,12 @@ main() {
     fi
   done
 
-  local first_boot=0
   if [[ "$FORCE_PROVISION" == "1" ]]; then
     rm -f "$DISK_FILE" "$SEED_ISO"
+    rm -rf "$CIDATA_DIR"
   fi
 
+  local first_boot=0
   if ! is_valid_qcow "$DISK_FILE"; then
     first_boot=1
     fetch_image "$VM_OS" "$DISK_FILE"
@@ -290,6 +324,7 @@ main() {
 
   resize_disk "$DISK_FILE" "$OS_DISKSIZE"
 
+  # Always refresh seed on first boot; also if missing.
   if [[ "$first_boot" -eq 1 || ! -f "$SEED_ISO" ]]; then
     info "Provisioning."
     write_cidata
