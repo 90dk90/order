@@ -370,13 +370,11 @@ export default ({ row, prefixLabel }: Props) => {
             x: {
                 ticks: { color: CloudUI.textMuted, maxTicksLimit: 5, font: { size: 10 } },
                 grid: { display: false },
-                border: { color: 'rgba(148,163,184,0.18)' },
             },
             y: {
                 beginAtZero: true,
                 ticks: { color: CloudUI.textMuted, font: { size: 10 } },
                 grid: { color: 'rgba(148,163,184,0.10)' },
-                border: { display: false },
                 title: {
                     display: true,
                     text: unit,
