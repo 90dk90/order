@@ -17,6 +17,8 @@ WHERE ev.egg_id = 77 AND ev.env_variable = 'LICENSE'
   AND sv.variable_value <> '';
 SQL
 
+CHANGED_IDS=()
+
 mapfile -t rows < <(mysql --default-character-set=utf8mb4 -N panel -e "
 SELECT s.id, a.node_id, a.ip,
   COALESCE((
@@ -53,6 +55,7 @@ for row in "${rows[@]:-}"; do
       mysql --default-character-set=utf8mb4 panel -e \
         "UPDATE allocations SET server_id=${sid}, updated_at=NOW() WHERE id=${free};"
       echo "bound ${ip}:${p} -> server ${sid}"
+      CHANGED_IDS+=("$sid")
       continue
     fi
 
@@ -66,5 +69,30 @@ for row in "${rows[@]:-}"; do
       "INSERT INTO allocations (node_id, ip, port, server_id, created_at, updated_at)
        VALUES (${node_id}, '${ip}', ${p}, ${sid}, NOW(), NOW());"
     echo "created ${ip}:${p} -> server ${sid}"
+    CHANGED_IDS+=("$sid")
   done
 done
+
+# Wings must republish Docker DNAT for new display ports (otherwise noVNC is unreachable).
+if [[ "${#CHANGED_IDS[@]}" -gt 0 && -f /var/www/jexactyl/artisan ]]; then
+  uniq_ids=$(printf '%s\n' "${CHANGED_IDS[@]}" | awk 'NF && !a[$0]++' | tr '\n' ' ')
+  echo "syncing Wings for servers: ${uniq_ids}"
+  cd /var/www/jexactyl
+  IDS="$uniq_ids" php -r '
+require "vendor/autoload.php";
+$app = require "bootstrap/app.php";
+$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+$ids = array_values(array_unique(array_filter(array_map("intval", preg_split("/\s+/", getenv("IDS") ?: "")))));
+$svc = $app->make(Jexactyl\Services\Allocations\LumenVmNetworkService::class);
+foreach ($ids as $id) {
+  $s = Jexactyl\Models\Server::query()->with(["allocation","egg","allocations"])->find($id);
+  if (!$s) continue;
+  try {
+    $svc->afterChange($s, true);
+    echo "wings-sync ok server={$id}\n";
+  } catch (Throwable $e) {
+    echo "wings-sync fail server={$id}: ".$e->getMessage()."\n";
+  }
+}
+'
+fi
