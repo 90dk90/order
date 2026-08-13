@@ -7,7 +7,7 @@
 # Images: Hetzner S3 only (public HTTP or private rclone). No Lumen API.
 set -euo pipefail
 
-VERSION="0.7.1"
+VERSION="0.7.2"
 HOME_DIR="${HOME_DIR:-/home/container}"
 CACHE_DIR="${CACHE_DIR:-/opt/1vps/lumenvm-net/vm-images}"
 WORKDIR="${HOME_DIR}"
@@ -199,12 +199,48 @@ verify_checksum() {
   return 0
 }
 
+ARIA2_BIN="${ARIA2_BIN:-/opt/1vps/lumenvm-net/bin/aria2c}"
+# Parallelism knobs (Hetzner S3 loves many streams)
+S3_STREAMS="${S3_STREAMS:-16}"
+S3_CHUNK_SIZE="${S3_CHUNK_SIZE:-32M}"
+S3_BUFFER="${S3_BUFFER:-128M}"
+
 fetch_from_s3_public() {
   local os="$1" tmp="$2"
   local url
   url="$(image_url_for "$os")"
-  info "Downloading ${os} from S3 (public)"
+  info "Downloading ${os} from S3 (public, multi-stream)"
   info "${url}"
+
+  # Prefer rclone HTTP multi-thread (same binary as private path)
+  if [[ -x "$RCLONE_BIN" ]]; then
+    "$RCLONE_BIN" copyurl "$url" "$tmp" \
+      --multi-thread-streams "$S3_STREAMS" \
+      --multi-thread-cutoff 64M \
+      --multi-thread-chunk-size "$S3_CHUNK_SIZE" \
+      --buffer-size "$S3_BUFFER" \
+      --retries 5 --low-level-retries 10 \
+      --stats 5s --stats-one-line \
+      --progress=false
+    return 0
+  fi
+
+  # aria2 multi-connection fallback
+  local aria=""
+  if [[ -x "$ARIA2_BIN" ]]; then
+    aria="$ARIA2_BIN"
+  elif command -v aria2c >/dev/null 2>&1; then
+    aria="$(command -v aria2c)"
+  fi
+  if [[ -n "$aria" ]]; then
+    "$aria" -c -x "$S3_STREAMS" -s "$S3_STREAMS" -k 1M \
+      --file-allocation=none --summary-interval=5 \
+      --max-tries=5 --retry-wait=2 --connect-timeout=30 \
+      --allow-overwrite=true --auto-file-renaming=false \
+      -d "$(dirname "$tmp")" -o "$(basename "$tmp")" "$url"
+    return 0
+  fi
+
   if command -v curl >/dev/null 2>&1; then
     curl -4 -fL --retry 5 --retry-delay 2 --connect-timeout 30 --progress-bar -o "$tmp" "$url"
   else
@@ -217,10 +253,36 @@ fetch_from_s3_private() {
   local remote="${S3_REMOTE%/}/${os}.qcow2"
   [[ -x "$RCLONE_BIN" ]] || { err "rclone missing at ${RCLONE_BIN}"; exit 1; }
   [[ -f "$RCLONE_CONFIG" ]] || { err "rclone config missing at ${RCLONE_CONFIG}"; exit 1; }
-  info "Downloading ${os} from S3 (private rclone) — large image, please wait"
+  info "Downloading ${os} from S3 (private, ${S3_STREAMS} streams)"
   info "${remote}"
   "$RCLONE_BIN" --config "$RCLONE_CONFIG" copyto "$remote" "$tmp" \
-    --retries 5 --low-level-retries 10 --stats 15s --stats-one-line
+    --multi-thread-streams "$S3_STREAMS" \
+    --multi-thread-cutoff 64M \
+    --multi-thread-chunk-size "$S3_CHUNK_SIZE" \
+    --s3-chunk-size 64M \
+    --buffer-size "$S3_BUFFER" \
+    --transfers 1 --checkers 8 \
+    --retries 5 --low-level-retries 10 \
+    --stats 5s --stats-one-line \
+    --progress=false
+}
+
+# Materialize cache → server disk. Prefer qcow2 backing file (instant) over full copy.
+materialize_image() {
+  local cache="$1" dest="$2"
+  rm -f "$dest"
+  # Backing file: COW clone, nearly instant even for 12G Windows images.
+  if qemu-img create -f qcow2 -F qcow2 -b "$cache" "$dest" >/dev/null 2>&1; then
+    # Make backing path absolute so the VM still finds it if cwd changes
+    qemu-img rebase -f qcow2 -F qcow2 -b "$cache" -u "$dest" >/dev/null 2>&1 || true
+    log "Linked image (qcow2 backing → cache, fast provision)"
+    return 0
+  fi
+  info "Full copy to server directory (backing unavailable)"
+  if cp --reflink=auto -f "$cache" "$dest" 2>/dev/null; then
+    return 0
+  fi
+  cp -f "$cache" "$dest"
 }
 
 fetch_image() {
@@ -247,8 +309,8 @@ fetch_image() {
   if is_valid_qcow "$cache"; then
     if verify_checksum "$os" "$cache"; then
       log "Using S3 cache ${cache} ($(du -h "$cache" | awk '{print $1}'))"
-      step "…" "Copying cached image into server directory"
-      cp -f "$cache" "$dest"
+      step "…" "Provisioning disk from cache"
+      materialize_image "$cache" "$dest"
       return 0
     fi
     err "Dropping corrupt cache ${cache}"
@@ -256,7 +318,15 @@ fetch_image() {
   fi
 
   rm -f "$tmp"
-  if is_private_s3_os "$os"; then
+  # Prefer authenticated S3 API for everything when rclone is configured (faster + consistent)
+  if [[ -x "$RCLONE_BIN" && -f "$RCLONE_CONFIG" ]]; then
+    fetch_from_s3_private "$os" "$tmp" || {
+      if is_private_s3_os "$os"; then
+        exit 1
+      fi
+      fetch_from_s3_public "$os" "$tmp"
+    }
+  elif is_private_s3_os "$os"; then
     fetch_from_s3_private "$os" "$tmp"
   else
     fetch_from_s3_public "$os" "$tmp"
@@ -272,7 +342,7 @@ fetch_image() {
     exit 1
   fi
   mv -f "$tmp" "$cache"
-  cp -f "$cache" "$dest"
+  materialize_image "$cache" "$dest"
   log "Image ready ($(du -h "$dest" | awk '{print $1}'))"
 }
 
