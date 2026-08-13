@@ -34,7 +34,8 @@ LICENSE='…' ./scripts/sync-lumen-desktops-to-s3.sh   # admin seed only
 
 | Variable | Notes |
 |----------|--------|
-| `OS_PASSWORD` / `OS_HOSTNAME` / `OS_PUBKEY` | Linux cloud-init; Windows Cloudbase-Init when present in image |
+| `OS_PASSWORD` / `OS_HOSTNAME` | Linux cloud-init; Windows Cloudbase-Init when present in image |
+| `OS_PUBKEY` | Hidden — client manages SSH keys themselves |
 | `OS_DISKSIZE` | Auto from `{{server.build.disk}}` (MiB → GiB), hidden |
 | `PACKAGE_UPDATE` | Hidden, always `0` (images stay warm; client can `apt update`) |
 | `DISPLAY_MODE` | see above |
