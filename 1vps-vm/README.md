@@ -2,32 +2,46 @@
 
 Self-hosted KVM agent replacing LumenVM for Digi / 1VPS.
 
-## Why
+## Image source (Hetzner S3)
 
-LumenVM downloads OS images via `api.lumenvm.cloud` (license + redirects). Debian mirrors hang; Ubuntu often works. This agent downloads from **official mirrors only** and keeps using the existing host TAP / dedicated-IP stack.
+Bucket: `1vps-vm-images` @ `https://fsn1.your-objectstorage.com`
+
+Objects are **public-read**:
+`https://fsn1.your-objectstorage.com/1vps-vm-images/<os>.qcow2`
+
+Override base URL with env `VM_IMAGE_BASE`.
+
+Sync (on the Wings node, with `/root/.1vps-s3.env`):
+
+```bash
+/opt/1vps/lumenvm-net/bin/sync-images-to-s3.sh
+# or from repo:
+./scripts/sync-images-to-s3.sh
+```
+
+Warm local cache from S3:
+
+```bash
+./scripts/fetch-images.sh debian-12 ubuntu-24
+```
+
+## Host stack reused
+
+- QEMU wrapper → TAP + virtio-net + DHCP `10.0.2.15`
+- `lumen-autoballoon` (QMP)
+- `lumen-dedicated-ip-forward`
 
 ## Layout
 
 - `agent/1vps-vm` — container entrypoint
-- `scripts/fetch-images.sh` — prefetch cache on the node
+- `scripts/fetch-images.sh` — pull from S3 → host cache
+- `scripts/sync-images-to-s3.sh` — mirrors → S3
 - `docker/Dockerfile` — thin image (`ENTRYPOINT` → host-mounted agent)
 
-## Host paths (already mounted by custom Wings)
-
-- `/opt/1vps/lumenvm-net` → container
-- `/opt/1vps/lumenvm-net/qemu-system-x86_64` → `/usr/bin/qemu-system-x86_64` (TAP wrapper)
-- Cache: `/opt/1vps/lumenvm-net/vm-images/`
-
-## Deploy (node)
+## Deploy
 
 ```bash
 install -m 0755 agent/1vps-vm /opt/1vps/lumenvm-net/bin/1vps-vm
-mkdir -p /opt/1vps/lumenvm-net/vm-images
-./scripts/fetch-images.sh debian-12 ubuntu-24
-docker build -t ghcr.io/david1117dev/lumenvm:1vps-debian-12 --build-arg VM_OS=debian-12 -f docker/Dockerfile .
-# set server docker image to ghcr.io/david1117dev/lumenvm:1vps-debian-12 and VM_OS=debian-12
+install -m 0755 scripts/*.sh /opt/1vps/lumenvm-net/bin/
+docker build --build-arg VM_OS=debian-12 -t ghcr.io/david1117dev/lumenvm:1vps-debian-12 -f docker/Dockerfile docker
 ```
-
-## Env (egg)
-
-Same as Lumen egg: `OS_PASSWORD`, `OS_HOSTNAME`, `OS_DISKSIZE`, `ADDITIONAL_PORTS`, `SERVER_IP`, plus `VM_OS`.

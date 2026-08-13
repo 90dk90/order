@@ -7,7 +7,7 @@
 # No api.lumenvm.cloud — official mirrors / local cache only.
 set -euo pipefail
 
-VERSION="0.1.1"
+VERSION="0.2.0"
 HOME_DIR="${HOME_DIR:-/home/container}"
 CACHE_DIR="${CACHE_DIR:-/opt/1vps/lumenvm-net/vm-images}"
 WORKDIR="${HOME_DIR}"
@@ -53,16 +53,20 @@ CIDATA_DIR="${WORKDIR}/.1vps-cidata"
 STATE_FILE="${WORKDIR}/.1vps-vm-state"
 SERIAL_LOG="${WORKDIR}/serial.log"
 
-declare -A IMAGE_URLS=(
-  [debian-10]="https://cloud.debian.org/images/cloud/buster/latest/debian-10-genericcloud-amd64.qcow2"
-  [debian-11]="https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-genericcloud-amd64.qcow2"
-  [debian-12]="https://gemmei.ftp.acc.umu.se/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
-  [debian-13]="https://gemmei.ftp.acc.umu.se/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2"
-  [ubuntu-18]="https://cloud-images.ubuntu.com/releases/18.04/release/ubuntu-18.04-server-cloudimg-amd64.img"
-  [ubuntu-20]="https://cloud-images.ubuntu.com/releases/20.04/release/ubuntu-20.04-server-cloudimg-amd64.img"
-  [ubuntu-22]="https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
-  [ubuntu-24]="https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+# Hetzner Object Storage (fsn1) — public-read objects in bucket 1vps-vm-images
+VM_IMAGE_BASE="${VM_IMAGE_BASE:-https://fsn1.your-objectstorage.com/1vps-vm-images}"
+
+# Keys must match objects uploaded by scripts/sync-images-to-s3.sh
+SUPPORTED_OS=(
+  debian-10 debian-11 debian-12 debian-13
+  ubuntu-18 ubuntu-20 ubuntu-22 ubuntu-24
+  fedora-40 rockylinux almalinux alpine archlinux
 )
+
+image_url_for() {
+  local os="$1"
+  printf '%s/%s.qcow2' "${VM_IMAGE_BASE%/}" "$os"
+}
 
 is_valid_qcow() {
   local f="$1"
@@ -75,9 +79,17 @@ is_valid_qcow() {
 
 fetch_image() {
   local os="$1" dest="$2"
-  local url="${IMAGE_URLS[$os]:-}"
-  local cache="${CACHE_DIR}/${os}.qcow2"
+  local url cache tmp known=0 x
+  for x in "${SUPPORTED_OS[@]}"; do
+    [[ "$x" == "$os" ]] && known=1 && break
+  done
+  if [[ "$known" -ne 1 ]]; then
+    err "Unsupported OS=${os} (not in S3 catalog)"
+    exit 1
+  fi
 
+  url="$(image_url_for "$os")"
+  cache="${CACHE_DIR}/${os}.qcow2"
   mkdir -p "$CACHE_DIR"
 
   if is_valid_qcow "$cache"; then
@@ -86,14 +98,9 @@ fetch_image() {
     return 0
   fi
 
-  if [[ -z "$url" ]]; then
-    err "No download URL for OS=${os}"
-    exit 1
-  fi
-
-  info "Downloading image for ${os} (direct mirror, no Lumen API)"
+  info "Downloading image for ${os} from Hetzner S3"
   info "${url}"
-  local tmp="${cache}.partial"
+  tmp="${cache}.partial"
   rm -f "$tmp"
   if command -v curl >/dev/null 2>&1; then
     curl -4 -fL --retry 5 --retry-delay 2 --connect-timeout 30 -o "$tmp" "$url"
