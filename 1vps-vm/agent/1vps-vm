@@ -7,7 +7,7 @@
 # Images: Hetzner S3 only (public HTTP or private rclone). No Lumen API.
 set -euo pipefail
 
-VERSION="0.6.0"
+VERSION="0.6.1"
 HOME_DIR="${HOME_DIR:-/home/container}"
 CACHE_DIR="${CACHE_DIR:-/opt/1vps/lumenvm-net/vm-images}"
 WORKDIR="${HOME_DIR}"
@@ -107,15 +107,30 @@ image_url_for() {
   printf '%s/%s.qcow2' "${VM_IMAGE_BASE%/}" "$os"
 }
 
-# Panel disk is MiB ({{server.build.disk}}). Manual values stay in GiB.
+# Panel disk is MiB (egg default {{server.build.disk}} — often stored literally
+# until dash sync cron replaces it with servers.disk). Manual values stay in GiB.
 normalize_disksize() {
   local v="${OS_DISKSIZE}"
-  if [[ "$v" =~ ^[0-9]+$ ]] && [[ "$v" -ge 1024 ]]; then
+  # Unresolved panel placeholder / empty → try alternate env
+  if [[ -z "$v" || "$v" == *"{{"* || "$v" == *"}}"* ]]; then
+    v="${SERVER_DISKSIZE:-${SERVER_DISK:-${P_SERVER_DISK:-}}}"
+  fi
+  if [[ -z "$v" || "$v" == *"{{"* || "$v" == *"}}"* ]]; then
+    err "Invalid OS_DISKSIZE=${OS_DISKSIZE}"
+    err "Panel must sync OS_DISKSIZE from server disk quota (MiB). Retry in ~1 min or restart."
+    exit 1
+  fi
+  if ! [[ "$v" =~ ^[0-9]+$ ]]; then
+    err "Invalid OS_DISKSIZE=${OS_DISKSIZE}"
+    err "Expected a number (MiB from panel or GiB manual)."
+    exit 1
+  fi
+  if [[ "$v" -ge 1024 ]]; then
     v=$((v / 1024))
     [[ "$v" -lt 1 ]] && v=1
     info "OS_DISKSIZE from panel disk quota → ${v}G"
   fi
-  if ! [[ "$v" =~ ^[0-9]+$ ]] || [[ "$v" -lt 1 ]]; then
+  if [[ "$v" -lt 1 ]]; then
     err "Invalid OS_DISKSIZE=${OS_DISKSIZE}"
     exit 1
   fi
