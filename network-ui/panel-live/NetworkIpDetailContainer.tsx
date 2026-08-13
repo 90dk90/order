@@ -1,1048 +1,555 @@
-import React, { Fragment, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { NavLink, useHistory, useParams, useRouteMatch } from 'react-router-dom';
 import tw from 'twin.macro';
-import { useParams, useHistory } from 'react-router-dom';
-import useSWR from 'swr';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import {
+    faArrowLeft,
+    faCopy,
+    faEllipsisH,
+    faEye,
+    faGlobe,
+    faNetworkWired,
+    faSearch,
+    faShieldAlt,
+    faSyncAlt,
+} from '@fortawesome/free-solid-svg-icons';
 import * as Icon from 'react-feather';
-import useFlash from '@/plugins/useFlash';
+import styled from 'styled-components/macro';
+import PageContentBlock from '@/components/elements/PageContentBlock';
 import Spinner from '@/components/elements/Spinner';
-import NetworkNavTabs from '@/components/network/NetworkNavTabs';
-import HmsModal from '@/components/hms/HmsModal';
-import { HMS } from '@/components/hms/hmsTheme';
+import { Alert } from '@/components/elements/alert';
+import { getNetworkIps, getDdosIncidents, NetworkIpRow, DdosIncident } from '@/api/network';
 import { CloudUI } from '@/components/hms/cloudUi';
 import {
-    DdosFilterMode,
-    DdosIncident,
-    getDdosFilterModes,
-    getDdosIncidents,
-    getNetworkIps,
-    NetworkIpRow,
-    updateNetworkRdns,
-} from '@/api/network';
-import {
+    NetworkPage,
+    NetworkHeader,
+    Panel,
+    PanelHeader,
+    StatCard,
     Badge,
-    DataTable,
-    EmptyState,
     GhostButton,
     GhostLink,
-    NetworkHeader,
-    NetworkPage,
-    Panel,
     PrimaryButton,
+    SegmentedControl,
     SearchField,
+    Toolbar,
+    MobileCard,
+    MobileMetaGrid,
+    ActionsMenu,
+    DataTable,
     Td,
-    copyText,
+    MonoIp,
+    MetaLine,
+    EmptyState,
     formatWhen,
+    durationMin,
+    severityOfBps,
+    copyText,
 } from '@/components/network/NetworkUi';
+import NetworkIpStatsTab from '@/components/network/NetworkIpStatsTab';
+import NetworkIpAnalysisTab from '@/components/network/NetworkIpAnalysisTab';
 
-type PrefixTab = 'general' | 'stats' | 'analysis' | 'attacks';
+type TabKey = 'general' | 'stats' | 'analysis' | 'attacks';
 
-const cidrLabel = (ip: string) => (ip.includes('/') ? ip : `${ip}/32`);
-const bareIp = (ip: string) => ip.split('/')[0] || ip;
+const TabBar = styled.div`
+    ${tw`flex flex-wrap gap-2 border-b mb-6`};
+    border-color: ${CloudUI.border};
+`;
 
-const inAddrArpa = (ip: string) => {
-    const parts = bareIp(ip).split('.');
-    if (parts.length !== 4) return '—';
-    return `${parts[2]}.${parts[1]}.${parts[0]}.in-addr.arpa`;
+const TabLink = styled(NavLink)`
+    ${tw`inline-flex items-center gap-2 px-4 py-3 text-sm font-semibold border-b-2 border-transparent transition-colors`};
+    color: ${CloudUI.textMuted};
+    margin-bottom: -1px;
+
+    &:hover {
+        color: ${CloudUI.text};
+        border-color: ${CloudUI.borderSubtle};
+    }
+`;
+
+const tabActiveStyle: React.CSSProperties = {
+    color: CloudUI.accent,
+    borderBottomColor: CloudUI.accent,
 };
 
-const gatewayFromPrefix = (ip: string) => {
-    const bare = bareIp(ip);
-    const parts = bare.split('.');
-    if (parts.length !== 4) return '—';
-    return `${parts[0]}.${parts[1]}.${parts[2]}.1`;
-};
+const Field = styled.div`
+    ${tw`rounded-lg border p-4`};
+    background: ${CloudUI.surface};
+    border-color: ${CloudUI.border};
+`;
 
-const maskFromPrefix = (ip: string) => {
-    if (cidrLabel(ip).endsWith('/32')) return '255.255.255.255';
-    return '—';
-};
+const FieldLabel = styled.div`
+    ${tw`text-xs font-semibold uppercase tracking-wide mb-1`};
+    color: ${CloudUI.textMuted};
+`;
 
-const Metric = ({
-    label,
-    value,
-    hint,
-    tone = 'default',
-}: {
-    label: string;
-    value: string | number;
-    hint?: string;
-    tone?: 'default' | 'ok' | 'warn' | 'danger';
-}) => {
-    const color =
-        tone === 'ok'
-            ? CloudUI.success
-            : tone === 'warn'
-              ? CloudUI.warning
-              : tone === 'danger'
-                ? CloudUI.danger
-                : CloudUI.text;
-    return (
-        <div css={tw`min-w-0 py-1`}>
-            <p
-                css={tw`m-0 text-[11px] font-semibold uppercase tracking-wider`}
-                style={{ color: CloudUI.textMuted, letterSpacing: '0.08em' }}
-            >
-                {label}
-            </p>
-            <p css={tw`m-0 mt-1 text-2xl font-semibold tabular-nums tracking-tight`} style={{ color }}>
-                {value}
-            </p>
-            {hint ? (
-                <p css={tw`m-0 mt-0.5 text-xs truncate`} style={{ color: CloudUI.textMuted }}>
-                    {hint}
-                </p>
-            ) : null}
-        </div>
-    );
-};
+const FieldValue = styled.div`
+    ${tw`text-sm font-medium break-all`};
+    color: ${CloudUI.text};
+    font-family: ${CloudUI.font};
+`;
 
-const StatusDot = ({
-    tone,
-    label,
-}: {
-    tone: 'ok' | 'warn' | 'danger' | 'neutral';
-    label: string;
-}) => {
-    const color =
-        tone === 'ok'
-            ? CloudUI.success
-            : tone === 'warn'
-              ? CloudUI.warning
-              : tone === 'danger'
-                ? CloudUI.danger
-                : CloudUI.textMuted;
-    return (
-        <span css={tw`inline-flex items-center gap-2 text-sm`} style={{ color: CloudUI.textSecondary }}>
-            <span
-                css={tw`inline-block rounded-full flex-shrink-0`}
-                style={{ width: 7, height: 7, background: color, boxShadow: `0 0 0 3px ${color}22` }}
-            />
-            {label}
-        </span>
-    );
-};
+const Grid2 = styled.div`
+    ${tw`grid gap-4`};
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+`;
 
-const CopyIconButton = ({
-    value,
-    copied,
-    onCopy,
-}: {
-    value: string;
-    copied: boolean;
-    onCopy: (v: string) => void;
-}) => (
-    <button
-        type="button"
-        title={copied ? 'Copié' : 'Copier'}
-        onClick={() => onCopy(value)}
-        css={tw`inline-flex items-center justify-center rounded-lg border-0 cursor-pointer transition-colors flex-shrink-0`}
-        style={{
-            width: 34,
-            height: 34,
-            background: copied ? CloudUI.accentMuted : 'rgba(255,255,255,0.03)',
-            color: copied ? CloudUI.accentHover : CloudUI.textMuted,
-            border: `1px solid ${copied ? 'rgba(16,185,129,0.35)' : HMS.cardBorder}`,
-        }}
-    >
-        {copied ? <Icon.Check size={14} /> : <Icon.Copy size={14} />}
-    </button>
-);
+const Grid3 = styled.div`
+    ${tw`grid gap-4 mb-6`};
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+`;
 
-const HoverRow = ({ children }: { children: React.ReactNode }) => {
-    const [hover, setHover] = useState(false);
-    return (
-        <tr
-            onMouseEnter={() => setHover(true)}
-            onMouseLeave={() => setHover(false)}
-            style={{
-                background: hover ? 'rgba(255,255,255,0.025)' : 'transparent',
-                transition: 'background 0.12s ease',
-            }}
-        >
-            {children}
-        </tr>
-    );
-};
+function cidrLabel(ip: string): string {
+    return ip.includes('/') ? ip : `${ip}/32`;
+}
 
-const DefRow = ({
-    label,
-    children,
-    last,
-}: {
-    label: string;
-    children: React.ReactNode;
-    last?: boolean;
-}) => (
-    <div
-        css={tw`flex items-center justify-between gap-4 px-4 sm:px-6 py-3.5`}
-        style={{ borderBottom: last ? 'none' : `1px solid ${HMS.cardBorder}` }}
-    >
-        <dt css={tw`m-0 text-sm`} style={{ color: CloudUI.textMuted }}>
-            {label}
-        </dt>
-        <dd css={tw`m-0 text-right min-w-0`}>{children}</dd>
-    </div>
-);
+function severityTone(bps: number | null | undefined): 'danger' | 'ok' | 'warn' {
+    const s = severityOfBps(bps ?? undefined);
+    if (s === 'danger') return 'danger';
+    if (s === 'warn') return 'warn';
+    return 'ok';
+}
+
+function severityColor(bps: number | null | undefined): string {
+    const t = severityTone(bps);
+    if (t === 'danger') return CloudUI.danger;
+    if (t === 'warn') return CloudUI.warning;
+    return CloudUI.success;
+}
+
+function isActiveIncident(i: DdosIncident): boolean {
+    return !i.incident_stop;
+}
 
 export default () => {
-    const { ipId } = useParams<{ ipId: string }>();
     const history = useHistory();
-    const decoded = useMemo(() => {
+    const match = useRouteMatch();
+    const { ipId } = useParams<{ ipId: string }>();
+    const decoded = decodeURIComponent(ipId || '');
+
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const [row, setRow] = useState<NetworkIpRow | null>(null);
+
+    const [attacksLoading, setAttacksLoading] = useState(false);
+    const [attacksError, setAttacksError] = useState<string | null>(null);
+    const [attacks, setAttacks] = useState<DdosIncident[]>([]);
+    const [attackFilter, setAttackFilter] = useState<'all' | 'active'>('all');
+    const [attackQuery, setAttackQuery] = useState('');
+    const [copied, setCopied] = useState(false);
+
+    const base = match.url.replace(/\/(stats|analysis|attacks)$/, '');
+    const tab: TabKey = match.url.endsWith('/stats')
+        ? 'stats'
+        : match.url.endsWith('/analysis')
+          ? 'analysis'
+          : match.url.endsWith('/attacks')
+            ? 'attacks'
+            : 'general';
+
+    const prefix = useMemo(() => (row ? cidrLabel(row.ip) : cidrLabel(decoded)), [row, decoded]);
+
+    const loadRow = useCallback(async () => {
+        setLoading(true);
+        setError(null);
         try {
-            return decodeURIComponent(ipId || '');
-        } catch {
-            return ipId || '';
+            const rows = await getNetworkIps();
+            const found =
+                rows.find((r) => r.ip === decoded) ||
+                rows.find((r) => r.ip.split('/')[0] === decoded.split('/')[0]) ||
+                null;
+            setRow(found);
+            if (!found) setError('Adresse IP introuvable.');
+        } catch (e: any) {
+            setError(e?.message || 'Impossible de charger cette adresse IP.');
+            setRow(null);
+        } finally {
+            setLoading(false);
         }
-    }, [ipId]);
-
-    const { clearFlashes, clearAndAddHttpError, addFlash } = useFlash();
-    const { data: ips, error, mutate } = useSWR<NetworkIpRow[]>('network-ips', getNetworkIps, {
-        revalidateOnFocus: true,
-    });
-    const { data: modes } = useSWR<DdosFilterMode[]>('network-ddos-modes', getDdosFilterModes);
-    const { data: incidents } = useSWR<DdosIncident[]>('network-ddos-incidents', getDdosIncidents);
-
-    const [tab, setTab] = useState<PrefixTab>('general');
-    const [editOpen, setEditOpen] = useState(false);
-    const [hostname, setHostname] = useState('');
-    const [saving, setSaving] = useState(false);
-    const [copied, setCopied] = useState<string | null>(null);
-    const [ptrFilter, setPtrFilter] = useState('');
-    const [selected, setSelected] = useState(false);
-
-    const row = useMemo(() => {
-        if (!ips || !decoded) return null;
-        return (
-            ips.find(
-                (r) =>
-                    r.ip === decoded ||
-                    bareIp(r.ip) === bareIp(decoded) ||
-                    cidrLabel(r.ip) === decoded ||
-                    cidrLabel(r.ip) === cidrLabel(decoded)
-            ) || null
-        );
-    }, [ips, decoded]);
-
-    const modeByIp = useMemo(() => {
-        const map: Record<string, DdosFilterMode> = {};
-        (modes || []).forEach((m) => {
-            map[m.ip] = m;
-        });
-        return map;
-    }, [modes]);
-
-    useEffect(() => {
-        setTab('general');
-        setSelected(false);
-        setPtrFilter('');
     }, [decoded]);
 
+    const loadAttacks = useCallback(async () => {
+        if (!row) return;
+        setAttacksLoading(true);
+        setAttacksError(null);
+        try {
+            const list = await getDdosIncidents();
+            const ipBare = row.ip.split('/')[0];
+            setAttacks(list.filter((i) => i.ip === row.ip || i.ip === ipBare || i.ip?.startsWith(`${ipBare}/`)));
+        } catch (e: any) {
+            setAttacksError(e?.message || 'Impossible de récupérer les attaques.');
+            setAttacks([]);
+        } finally {
+            setAttacksLoading(false);
+        }
+    }, [row]);
+
     useEffect(() => {
-        if (error) clearAndAddHttpError({ error });
-        else clearFlashes();
-    }, [error]);
+        loadRow();
+    }, [loadRow]);
 
-    const relatedIncidents = useMemo(() => {
-        if (!row || !incidents) return [];
-        const target = bareIp(row.ip).toLowerCase();
-        return incidents.filter((i) => {
-            const ip = String(i.ip || '')
-                .split('/')[0]
-                .toLowerCase();
-            return !ip || ip === target || ip.includes(target) || target.includes(ip);
-        });
-    }, [incidents, row]);
+    useEffect(() => {
+        if (tab === 'attacks' && row) loadAttacks();
+    }, [tab, row, loadAttacks]);
 
-    const activeIncidents = useMemo(
-        () => relatedIncidents.filter((i) => !i.incident_stop).length,
-        [relatedIncidents]
+    const activeCount = useMemo(() => attacks.filter(isActiveIncident).length, [attacks]);
+    const peakBps = useMemo(
+        () => attacks.reduce((m, i) => Math.max(m, Number(i.max_bps) || 0), 0),
+        [attacks]
     );
 
-    if (!ips && !error) {
-        return (
-            <div css={tw`py-24 flex justify-center`}>
-                <Spinner size={'large'} />
-            </div>
-        );
-    }
+    const filteredAttacks = useMemo(() => {
+        const q = attackQuery.trim().toLowerCase();
+        return attacks.filter((i) => {
+            if (attackFilter === 'active' && !isActiveIncident(i)) return false;
+            if (!q) return true;
+            const hay = [
+                String(i.incident_id || ''),
+                i.ip || '',
+                i.attack_type || '',
+                i.protocol || '',
+                i.diversion_reason || '',
+                i.incident_start || '',
+                i.incident_stop || '',
+            ]
+                .join(' ')
+                .toLowerCase();
+            return hay.includes(q);
+        });
+    }, [attacks, attackFilter, attackQuery]);
 
-    if (!row) {
-        return (
-            <NetworkPage>
-                <NetworkNavTabs active="ips" />
-                <EmptyState
-                    icon={<Icon.Globe size={36} />}
-                    title="Préfixe introuvable"
-                    description="Cette adresse IP n’appartient pas à votre compte ou n’est plus disponible."
-                />
-                <div css={tw`mt-4`}>
-                    <GhostButton onClick={() => history.push('/network/ips')}>
-                        <Icon.ArrowLeft size={14} />
-                        Retour aux IPs
-                    </GhostButton>
-                </div>
-            </NetworkPage>
-        );
-    }
-
-    const label = cidrLabel(row.ip);
-    const ipBare = bareIp(row.ip);
-    const ptr = row.reverse_dns.preferred || row.reverse_dns.live || '';
-    const zone = inAddrArpa(row.ip);
-    const filterMode = modeByIp[row.ip]?.filter_mode || 'dynamic';
-    const alwaysOn = filterMode === 'always_on';
-    const ptrVisible =
-        !ptrFilter.trim() ||
-        ipBare.toLowerCase().includes(ptrFilter.toLowerCase()) ||
-        ptr.toLowerCase().includes(ptrFilter.toLowerCase());
-
-    const tabs: { id: PrefixTab; label: string }[] = [
-        { id: 'general', label: 'Général' },
-        { id: 'stats', label: 'Statistiques' },
-        { id: 'analysis', label: 'Analyse' },
-        { id: 'attacks', label: 'Attaques' },
-    ];
-
-    const onCopy = async (value: string) => {
-        const ok = await copyText(value);
+    const onCopy = async () => {
+        if (!row) return;
+        const ok = await copyText(row.ip);
         if (ok) {
-            setCopied(value);
-            window.setTimeout(() => setCopied((c) => (c === value ? null : c)), 1400);
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1500);
         }
     };
 
-    const openEdit = () => {
-        setHostname(row.reverse_dns.preferred || row.reverse_dns.live || '');
-        setEditOpen(true);
-    };
-
-    const saveRdns = async () => {
-        setSaving(true);
-        try {
-            await updateNetworkRdns(row.ip, hostname.trim() || null);
-            await mutate();
-            setEditOpen(false);
-            addFlash({ key: 'network:ips', type: 'success', message: 'Reverse DNS enregistré.' });
-        } catch (e) {
-            clearAndAddHttpError({ key: 'network:ips', error: e });
-        } finally {
-            setSaving(false);
-        }
-    };
-
-    const downloadCsv = () => {
-        if (!selected) return;
-        const lines = ['IP,Zone,PTR', `${ipBare},${zone},"${String(ptr).replace(/"/g, '""')}"`];
-        const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `ptr-${ipBare}.csv`;
-        a.click();
-        URL.revokeObjectURL(url);
-    };
-
-    return (
-        <NetworkPage>
-            <div css={tw`flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between`}>
-                <div css={tw`min-w-0`}>
-                    <NetworkHeader
-                        icon={Icon.Globe}
-                        title={label}
-                        subtitle="Configuration réseau, reverse DNS et protection DDoS de ce préfixe."
-                    />
-                    <div css={tw`mt-3 flex flex-wrap items-center gap-3`}>
-                        <StatusDot tone={row.routed ? 'ok' : 'neutral'} label={row.routed ? 'Routé' : 'Non routé'} />
-                        <StatusDot
-                            tone={alwaysOn ? 'warn' : 'ok'}
-                            label={alwaysOn ? 'Always-on' : 'Dynamic'}
-                        />
-                        <span css={tw`text-sm truncate`} style={{ color: CloudUI.textMuted }}>
-                            {row.service.name}
-                        </span>
-                    </div>
+    if (loading) {
+        return (
+            <PageContentBlock title={prefix}>
+                <div css={tw`flex justify-center py-20`}>
+                    <Spinner size={'large'} centered />
                 </div>
-                <div css={tw`flex flex-wrap items-center gap-2 flex-shrink-0`}>
-                    <CopyIconButton value={label} copied={copied === label} onCopy={onCopy} />
-                    <GhostLink compact to="/network/ips">
-                        <Icon.ArrowLeft size={13} />
-                        Retour
-                    </GhostLink>
-                </div>
-            </div>
+            </PageContentBlock>
+        );
+    }
 
-            <NetworkNavTabs active="ips" />
-
-            <div
-                css={tw`rounded-xl px-4 sm:px-6 py-4 grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6`}
-                style={{
-                    background: CloudUI.surface,
-                    border: `1px solid ${HMS.cardBorder}`,
-                }}
-            >
-                <Metric
-                    label="Routage"
-                    value={row.routed ? 'Actif' : 'Inactif'}
-                    hint={row.service.name}
-                    tone={row.routed ? 'ok' : 'default'}
-                />
-                <Metric
-                    label="Anti-DDoS"
-                    value={alwaysOn ? 'Always-on' : 'Dynamic'}
-                    hint="Mitigation Digi"
-                    tone={alwaysOn ? 'warn' : 'ok'}
-                />
-                <Metric
-                    label="Reverse DNS"
-                    value={ptr ? 'OK' : '—'}
-                    hint={ptr || 'Non défini'}
-                    tone={ptr ? 'ok' : 'default'}
-                />
-                <Metric
-                    label="Attaques"
-                    value={relatedIncidents.length}
-                    hint={
-                        activeIncidents
-                            ? `${activeIncidents} en cours`
-                            : relatedIncidents.length
-                              ? 'Historique'
-                              : 'Aucune'
-                    }
-                    tone={activeIncidents ? 'danger' : relatedIncidents.length ? 'warn' : 'ok'}
-                />
-            </div>
-
-            <div
-                css={tw`flex p-1 rounded-xl gap-1 w-full overflow-x-auto`}
-                style={{ background: HMS.inputBg, border: `1px solid ${HMS.cardBorder}` }}
-                role="tablist"
-            >
-                {tabs.map((t) => {
-                    const active = tab === t.id;
-                    return (
-                        <button
-                            key={t.id}
-                            type="button"
-                            role="tab"
-                            aria-selected={active}
-                            onClick={() => setTab(t.id)}
-                            css={tw`flex-1 px-2 sm:px-3 py-2 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap border-0 cursor-pointer transition-colors text-center`}
-                            style={{
-                                background: active ? CloudUI.accentMuted : 'transparent',
-                                color: active ? CloudUI.accentHover : CloudUI.textMuted,
-                                boxShadow: active ? 'inset 0 0 0 1px rgba(16,185,129,0.28)' : 'none',
-                                minHeight: 40,
-                            }}
-                        >
-                            {t.label}
-                            {t.id === 'attacks' && relatedIncidents.length ? (
-                                <span
-                                    css={tw`ml-1.5 inline-flex items-center justify-center rounded-md px-1.5 text-[10px] font-semibold tabular-nums`}
-                                    style={{
-                                        background: activeIncidents
-                                            ? 'rgba(239,68,68,0.18)'
-                                            : 'rgba(255,255,255,0.06)',
-                                        color: activeIncidents ? CloudUI.danger : CloudUI.textMuted,
-                                    }}
-                                >
-                                    {relatedIncidents.length}
-                                </span>
-                            ) : null}
-                        </button>
-                    );
-                })}
-            </div>
-
-            {tab === 'general' ? (
-                <Fragment>
-                    <div css={tw`grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5`}>
-                        <Panel padded={false}>
-                            <div
-                                css={tw`px-4 sm:px-6 py-4 border-b`}
-                                style={{ borderColor: HMS.cardBorder }}
-                            >
-                                <h2 css={tw`m-0 text-base font-semibold tracking-tight`} style={{ color: CloudUI.text }}>
-                                    Configuration réseau
-                                </h2>
-                                <p css={tw`m-0 mt-1 text-sm`} style={{ color: CloudUI.textMuted }}>
-                                    Paramètres d&apos;adressage pour {ipBare}
-                                </p>
-                            </div>
-                            <dl css={tw`m-0`}>
-                                <DefRow label="Masque">
-                                    <span css={tw`font-mono text-sm font-medium`} style={{ color: CloudUI.text }}>
-                                        {maskFromPrefix(row.ip)}
-                                    </span>
-                                </DefRow>
-                                <DefRow label="Passerelle">
-                                    <span css={tw`inline-flex items-center gap-2`}>
-                                        <span css={tw`font-mono text-sm font-medium`} style={{ color: CloudUI.text }}>
-                                            {gatewayFromPrefix(row.ip)}
-                                        </span>
-                                        <CopyIconButton
-                                            value={gatewayFromPrefix(row.ip)}
-                                            copied={copied === gatewayFromPrefix(row.ip)}
-                                            onCopy={onCopy}
-                                        />
-                                    </span>
-                                </DefRow>
-                                <DefRow label="DNS">
-                                    <span css={tw`inline-flex items-center gap-2`}>
-                                        <span css={tw`font-mono text-sm font-medium`} style={{ color: CloudUI.text }}>
-                                            1.1.1.1
-                                        </span>
-                                        <CopyIconButton
-                                            value="1.1.1.1"
-                                            copied={copied === '1.1.1.1'}
-                                            onCopy={onCopy}
-                                        />
-                                    </span>
-                                </DefRow>
-                                <DefRow label="Anti-DDoS">
-                                    <Badge tone="ok">
-                                        <Icon.Shield size={11} />
-                                        Activé
-                                    </Badge>
-                                </DefRow>
-                                <DefRow label="MAC" last>
-                                    <span css={tw`font-mono text-sm font-medium`} style={{ color: CloudUI.text }}>
-                                        00:00:00:00:00:00
-                                    </span>
-                                </DefRow>
-                            </dl>
-                        </Panel>
-
-                        <Panel padded={false}>
-                            <div
-                                css={tw`px-4 sm:px-6 py-4 border-b`}
-                                style={{ borderColor: HMS.cardBorder }}
-                            >
-                                <h2 css={tw`m-0 text-base font-semibold tracking-tight`} style={{ color: CloudUI.text }}>
-                                    Statut routage
-                                </h2>
-                                <p css={tw`m-0 mt-1 text-sm`} style={{ color: CloudUI.textMuted }}>
-                                    Instance et état de publication BGP
-                                </p>
-                            </div>
-                            <div css={tw`px-4 sm:px-6 py-5 space-y-4`}>
-                                <div css={tw`flex items-start justify-between gap-4`}>
-                                    <p css={tw`m-0 text-sm leading-relaxed`} style={{ color: CloudUI.textMuted }}>
-                                        {row.routed
-                                            ? 'Ce préfixe est actuellement routé vers un service.'
-                                            : 'Aucune route active détectée pour ce préfixe.'}
-                                    </p>
-                                    <StatusDot
-                                        tone={row.routed ? 'ok' : 'neutral'}
-                                        label={row.routed ? 'Routé' : 'Non routé'}
-                                    />
-                                </div>
-
-                                <div
-                                    css={tw`rounded-xl px-4 py-4 flex flex-col sm:flex-row sm:items-center gap-3`}
-                                    style={{
-                                        background: 'rgba(255,255,255,0.02)',
-                                        border: `1px solid ${HMS.cardBorder}`,
-                                    }}
-                                >
-                                    <div
-                                        css={tw`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0`}
-                                        style={{
-                                            background: CloudUI.accentMuted,
-                                            color: CloudUI.accentHover,
-                                            border: '1px solid rgba(16,185,129,0.28)',
-                                        }}
-                                    >
-                                        <Icon.Server size={18} />
-                                    </div>
-                                    <div css={tw`min-w-0 flex-1`}>
-                                        <p
-                                            css={tw`m-0 text-[11px] font-semibold uppercase tracking-wider`}
-                                            style={{ color: CloudUI.textMuted, letterSpacing: '0.08em' }}
-                                        >
-                                            Service routé
-                                        </p>
-                                        <p
-                                            css={tw`m-0 mt-0.5 text-base font-semibold truncate`}
-                                            style={{ color: CloudUI.text }}
-                                        >
-                                            {row.service.name}
-                                        </p>
-                                        <p
-                                            css={tw`m-0 mt-0.5 text-xs font-mono truncate`}
-                                            style={{ color: CloudUI.textMuted }}
-                                        >
-                                            {row.service.uuidShort || row.service.uuid}
-                                        </p>
-                                    </div>
-                                    <GhostLink compact to={`/server/${row.service.uuid}`}>
-                                        Ouvrir
-                                        <Icon.ExternalLink size={12} />
-                                    </GhostLink>
-                                </div>
-                            </div>
-                        </Panel>
-                    </div>
-
-                    <Panel padded={false}>
-                        <div
-                            css={tw`px-4 sm:px-6 py-4 sm:py-5 flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3`}
-                            style={{ borderBottom: `1px solid ${HMS.cardBorder}` }}
-                        >
-                            <div css={tw`min-w-0`}>
-                                <h2 css={tw`m-0 text-base font-semibold tracking-tight`} style={{ color: CloudUI.text }}>
-                                    PTR / Reverse DNS
-                                </h2>
-                                <p css={tw`m-0 mt-1 text-sm leading-relaxed max-w-2xl`} style={{ color: CloudUI.textMuted }}>
-                                    Associez un hostname à {ipBare} pour le reverse DNS.
-                                </p>
-                            </div>
-                            <div css={tw`w-full lg:w-72 flex-shrink-0`}>
-                                <SearchField
-                                    value={ptrFilter}
-                                    onChange={setPtrFilter}
-                                    placeholder="Filtrer par IP ou hostname…"
-                                />
-                            </div>
-                        </div>
-
-                        <div
-                            css={tw`flex flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-3`}
-                            style={{
-                                borderBottom: `1px solid ${HMS.cardBorder}`,
-                                background: 'rgba(255,255,255,0.015)',
-                            }}
-                        >
-                            <div css={tw`flex flex-wrap gap-2`}>
-                                <GhostButton compact onClick={() => setSelected(true)}>
-                                    Sélectionner
-                                </GhostButton>
-                                <GhostButton compact disabled={!selected} onClick={() => setSelected(false)}>
-                                    Retirer
-                                </GhostButton>
-                            </div>
-                            <GhostButton compact disabled={!selected} onClick={downloadCsv}>
-                                <Icon.Download size={13} />
-                                CSV
-                            </GhostButton>
-                        </div>
-
-                        {ptrVisible ? (
-                            <DataTable
-                                headers={[
-                                    { key: 'cb', label: '', width: '6%' },
-                                    { key: 'ip', label: 'IP', width: '18%' },
-                                    { key: 'zone', label: 'Zone', width: '28%' },
-                                    { key: 'ptr', label: 'État PTR', width: '30%' },
-                                    { key: 'act', label: '', width: '18%', align: 'right' },
-                                ]}
-                            >
-                                <HoverRow>
-                                    <Td>
-                                        <input
-                                            type="checkbox"
-                                            checked={selected}
-                                            onChange={(e) => setSelected(e.target.checked)}
-                                        />
-                                    </Td>
-                                    <Td>
-                                        <span css={tw`font-mono text-sm font-medium`} style={{ color: CloudUI.text }}>
-                                            {ipBare}
-                                        </span>
-                                    </Td>
-                                    <Td>
-                                        <span css={tw`font-mono text-xs`} style={{ color: CloudUI.textMuted }}>
-                                            {zone}
-                                        </span>
-                                    </Td>
-                                    <Td>
-                                        {ptr ? (
-                                            <span
-                                                css={tw`font-mono text-sm break-all`}
-                                                style={{ color: CloudUI.textSecondary }}
-                                            >
-                                                {ptr}
-                                            </span>
-                                        ) : (
-                                            <Badge tone="neutral">Non défini</Badge>
-                                        )}
-                                    </Td>
-                                    <Td align="right">
-                                        <GhostButton compact onClick={openEdit}>
-                                            <Icon.Edit3 size={13} />
-                                            Modifier
-                                        </GhostButton>
-                                    </Td>
-                                </HoverRow>
-                            </DataTable>
-                        ) : (
-                            <p
-                                css={tw`hidden lg:block m-0 py-10 text-center text-sm`}
-                                style={{ color: CloudUI.textMuted }}
-                            >
-                                Aucun PTR à afficher
-                            </p>
-                        )}
-
-                        <div css={tw`lg:hidden px-4 py-4 space-y-3`}>
-                            {ptrVisible ? (
-                                <div
-                                    css={tw`rounded-xl p-4 space-y-3`}
-                                    style={{ border: `1px solid ${HMS.cardBorder}` }}
-                                >
-                                    <div css={tw`flex items-center justify-between gap-3`}>
-                                        <label css={tw`inline-flex items-center gap-2 text-sm`} style={{ color: CloudUI.textSecondary }}>
-                                            <input
-                                                type="checkbox"
-                                                checked={selected}
-                                                onChange={(e) => setSelected(e.target.checked)}
-                                            />
-                                            Sélection
-                                        </label>
-                                        <GhostButton compact onClick={openEdit}>
-                                            <Icon.Edit3 size={13} />
-                                            Modifier
-                                        </GhostButton>
-                                    </div>
-                                    <div>
-                                        <p
-                                            css={tw`m-0 text-[11px] font-semibold uppercase tracking-wider`}
-                                            style={{ color: CloudUI.textMuted }}
-                                        >
-                                            IP
-                                        </p>
-                                        <p css={tw`m-0 mt-1 font-mono text-sm`} style={{ color: CloudUI.text }}>
-                                            {ipBare}
-                                        </p>
-                                    </div>
-                                    <div>
-                                        <p
-                                            css={tw`m-0 text-[11px] font-semibold uppercase tracking-wider`}
-                                            style={{ color: CloudUI.textMuted }}
-                                        >
-                                            Zone
-                                        </p>
-                                        <p css={tw`m-0 mt-1 font-mono text-xs`} style={{ color: CloudUI.textMuted }}>
-                                            {zone}
-                                        </p>
-                                    </div>
-                                    <div>
-                                        <p
-                                            css={tw`m-0 text-[11px] font-semibold uppercase tracking-wider`}
-                                            style={{ color: CloudUI.textMuted }}
-                                        >
-                                            PTR
-                                        </p>
-                                        <p css={tw`m-0 mt-1 font-mono text-sm break-all`} style={{ color: CloudUI.textSecondary }}>
-                                            {ptr || 'Non défini'}
-                                        </p>
-                                    </div>
-                                </div>
-                            ) : (
-                                <p css={tw`m-0 text-sm text-center py-6`} style={{ color: CloudUI.textMuted }}>
-                                    Aucun PTR à afficher
-                                </p>
-                            )}
-                        </div>
-
-                        <div
-                            css={tw`px-4 sm:px-6 py-3 text-xs border-t`}
-                            style={{ color: CloudUI.textMuted, borderColor: HMS.cardBorder }}
-                        >
-                            {selected ? '1 ligne sélectionnée.' : 'Aucune ligne sélectionnée.'}
-                        </div>
-                    </Panel>
-                </Fragment>
-            ) : null}
-
-            {tab === 'stats' ? (
-                <Panel>
-                    <h2 css={tw`m-0 text-base font-semibold tracking-tight`} style={{ color: CloudUI.text }}>
-                        Statistiques réseau
-                    </h2>
-                    <p css={tw`m-0 mt-1 text-sm`} style={{ color: CloudUI.textMuted }}>
-                        Trafic agrégé pour le préfixe {label}
-                    </p>
-                    <div css={tw`mt-6`}>
-                        <EmptyState
-                            icon={<Icon.BarChart2 size={36} />}
-                            title="Aucune donnée statistique"
-                            description="Aucune série statistique n’est encore disponible pour ce préfixe."
-                        />
-                    </div>
-                </Panel>
-            ) : null}
-
-            {tab === 'analysis' ? (
-                <Panel>
-                    <h2 css={tw`m-0 text-base font-semibold tracking-tight`} style={{ color: CloudUI.text }}>
-                        Analyse du trafic
-                    </h2>
-                    <p css={tw`m-0 mt-1 text-sm`} style={{ color: CloudUI.textMuted }}>
-                        Trafic applicatif pour {ipBare}
-                    </p>
-                    <div css={tw`mt-6`}>
-                        <EmptyState
-                            icon={<Icon.PieChart size={36} />}
-                            title="Aucune donnée sur la période"
-                            description="L’analyse détaillée n’est pas encore disponible pour ce préfixe."
-                        />
-                    </div>
-                </Panel>
-            ) : null}
-
-            {tab === 'attacks' ? (
-                <Panel padded={false}>
-                    <div
-                        css={tw`px-4 sm:px-6 py-4 sm:py-5 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3`}
-                        style={{ borderBottom: `1px solid ${HMS.cardBorder}` }}
-                    >
-                        <div>
-                            <h2 css={tw`m-0 text-base font-semibold tracking-tight`} style={{ color: CloudUI.text }}>
-                                Historique des attaques
-                            </h2>
-                            <p css={tw`m-0 mt-1 text-sm`} style={{ color: CloudUI.textMuted }}>
-                                Événements DDoS enregistrés pour {label}
-                            </p>
-                        </div>
-                        <GhostLink compact to={`/network/ddos?ip=${encodeURIComponent(row.ip)}`}>
-                            Voir toutes
-                            <Icon.ArrowRight size={12} />
+    if (error || !row) {
+        return (
+            <PageContentBlock title={prefix}>
+                <NetworkPage>
+                    <Alert type={'danger'}>{error || 'Adresse IP introuvable.'}</Alert>
+                    <div css={tw`mt-4`}>
+                        <GhostLink to={'/network/ips'}>
+                            <FontAwesomeIcon icon={faArrowLeft} /> Retour aux IPs
                         </GhostLink>
                     </div>
-                    {relatedIncidents.length === 0 ? (
-                        <EmptyState
-                            icon={<Icon.Shield size={36} />}
-                            title="Aucune attaque"
-                            description="Aucune attaque enregistrée pour cette période."
-                        />
-                    ) : (
-                        <>
-                            <DataTable
-                                headers={[
-                                    { key: 'start', label: 'Début', width: '22%' },
-                                    { key: 'end', label: 'Fin', width: '22%' },
-                                    { key: 'type', label: 'Type', width: '22%' },
-                                    { key: 'bps', label: 'Débit', width: '18%' },
-                                    { key: 'act', label: '', width: '16%', align: 'right' },
-                                ]}
-                            >
-                                {relatedIncidents.map((inc) => (
-                                    <HoverRow key={inc.incident_id}>
-                                        <Td>
-                                            <span css={tw`text-sm`} style={{ color: CloudUI.textSecondary }}>
-                                                {formatWhen(inc.incident_start)}
-                                            </span>
-                                        </Td>
-                                        <Td>
-                                            <span css={tw`text-sm`} style={{ color: CloudUI.textSecondary }}>
-                                                {inc.incident_stop ? formatWhen(inc.incident_stop) : '—'}
-                                            </span>
-                                        </Td>
-                                        <Td>
-                                            {!inc.incident_stop ? (
-                                                <Badge tone="danger">En cours</Badge>
-                                            ) : (
-                                                <Badge tone="warn">
-                                                    {inc.attack_type || inc.diversion_reason || 'Attaque'}
-                                                </Badge>
-                                            )}
-                                        </Td>
-                                        <Td>
-                                            <span css={tw`text-sm tabular-nums`} style={{ color: CloudUI.textSecondary }}>
-                                                {inc.max_bps_formattet || '—'}
-                                            </span>
-                                        </Td>
-                                        <Td align="right">
-                                            <GhostLink
-                                                compact
-                                                to={`/network/ddos?ip=${encodeURIComponent(row.ip)}&incident=${encodeURIComponent(inc.incident_id)}`}
-                                            >
-                                                Voir
-                                            </GhostLink>
-                                        </Td>
-                                    </HoverRow>
-                                ))}
-                            </DataTable>
-                            <div css={tw`lg:hidden px-4 py-4 space-y-3`}>
-                                {relatedIncidents.map((inc) => (
-                                    <div
-                                        key={inc.incident_id}
-                                        css={tw`rounded-xl p-4 space-y-2`}
-                                        style={{ border: `1px solid ${HMS.cardBorder}` }}
-                                    >
-                                        <div css={tw`flex items-center justify-between gap-2`}>
-                                            {!inc.incident_stop ? (
-                                                <Badge tone="danger">En cours</Badge>
-                                            ) : (
-                                                <Badge tone="warn">
-                                                    {inc.attack_type || inc.diversion_reason || 'Attaque'}
-                                                </Badge>
-                                            )}
-                                            <span css={tw`text-sm tabular-nums`} style={{ color: CloudUI.textSecondary }}>
-                                                {inc.max_bps_formattet || '—'}
-                                            </span>
-                                        </div>
-                                        <p css={tw`m-0 text-sm`} style={{ color: CloudUI.textMuted }}>
-                                            {formatWhen(inc.incident_start)}
-                                            {inc.incident_stop ? ` → ${formatWhen(inc.incident_stop)}` : ''}
-                                        </p>
-                                        <GhostLink
-                                            fullWidth
-                                            to={`/network/ddos?ip=${encodeURIComponent(row.ip)}&incident=${encodeURIComponent(inc.incident_id)}`}
-                                        >
-                                            Voir l&apos;attaque
-                                        </GhostLink>
-                                    </div>
-                                ))}
-                            </div>
-                        </>
-                    )}
-                </Panel>
-            ) : null}
+                </NetworkPage>
+            </PageContentBlock>
+        );
+    }
 
-            <HmsModal visible={editOpen} onClose={() => setEditOpen(false)} maxWidth="28rem">
-                <div css={tw`p-5 sm:p-6`}>
-                    <div css={tw`flex items-start gap-3.5 pr-8`}>
-                        <div
-                            css={tw`w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0`}
-                            style={{
-                                background: 'rgba(245,158,11,0.14)',
-                                color: CloudUI.warning,
-                                border: '1px solid rgba(245,158,11,0.28)',
-                            }}
-                        >
-                            <Icon.AlertTriangle size={20} strokeWidth={1.75} />
-                        </div>
-                        <div css={tw`min-w-0 pt-0.5`}>
-                            <h3
-                                css={tw`text-base sm:text-lg font-semibold m-0 tracking-tight`}
-                                style={{ color: CloudUI.text }}
-                            >
-                                Modifier le PTR / Reverse DNS
-                            </h3>
-                            <p css={tw`text-sm m-0 mt-1.5 leading-relaxed`} style={{ color: CloudUI.textMuted }}>
-                                Mettez à jour le PTR de cette IP. Cette action impacte directement la résolution
-                                reverse DNS.
-                            </p>
-                        </div>
-                    </div>
+    const reverse = row.reverse_dns?.preferred || row.reverse_dns?.live || '—';
 
-                    <div css={tw`mt-5 space-y-4`}>
-                        <div
-                            css={tw`rounded-xl px-3.5 py-3 text-xs leading-relaxed`}
-                            style={{
-                                background: 'rgba(245,158,11,0.08)',
-                                border: '1px solid rgba(245,158,11,0.22)',
-                                color: '#fbbf24',
-                            }}
-                        >
-                            Utilisez un FQDN valide (ex.&nbsp;: <span css={tw`font-mono`}>host.example.com</span>).
-                            Une mauvaise valeur peut perturber la délivrabilité mail et certains contrôles réseau.
-                        </div>
-
-                        <div
-                            css={tw`rounded-xl px-4 py-3.5 space-y-3`}
-                            style={{
-                                background: 'rgba(255,255,255,0.02)',
-                                border: `1px solid ${HMS.cardBorder}`,
-                            }}
-                        >
-                            <div css={tw`flex items-start justify-between gap-3`}>
-                                <div css={tw`min-w-0`}>
-                                    <p
-                                        css={tw`m-0 text-[11px] font-semibold uppercase tracking-wider`}
-                                        style={{ color: CloudUI.textMuted, letterSpacing: '0.12em' }}
-                                    >
-                                        Adresse IP
-                                    </p>
-                                    <p
-                                        css={tw`m-0 mt-1 font-mono text-sm font-medium truncate`}
-                                        style={{ color: CloudUI.text }}
-                                    >
-                                        {ipBare}
-                                    </p>
-                                </div>
-                                <CopyIconButton
-                                    value={ipBare}
-                                    copied={copied === ipBare}
-                                    onCopy={onCopy}
-                                />
-                            </div>
-                            <div
-                                css={tw`pt-3`}
-                                style={{ borderTop: `1px solid ${HMS.cardBorder}` }}
-                            >
-                                <p
-                                    css={tw`m-0 text-[11px] font-semibold uppercase tracking-wider`}
-                                    style={{ color: CloudUI.textMuted, letterSpacing: '0.12em' }}
-                                >
-                                    PTR actuel
-                                </p>
-                                <p
-                                    css={tw`m-0 mt-1 font-mono text-sm break-all`}
-                                    style={{ color: ptr ? CloudUI.textSecondary : CloudUI.textMuted }}
-                                >
-                                    {ptr || 'Non défini'}
-                                </p>
-                            </div>
-                        </div>
-
-                        <label css={tw`block`} htmlFor="ptr-target">
-                            <span
-                                css={tw`block text-sm font-medium mb-2`}
-                                style={{ color: CloudUI.textSecondary }}
-                            >
-                                Nom d&apos;hôte cible (FQDN)
-                            </span>
-                            <input
-                                id="ptr-target"
-                                value={hostname}
-                                onChange={(e) => setHostname(e.target.value)}
-                                placeholder="ex: srv01.example.com"
-                                autoCapitalize="none"
-                                autoCorrect="off"
-                                spellCheck={false}
-                                inputMode="url"
-                                autoFocus
-                                css={tw`w-full rounded-xl px-3.5 py-3 outline-none text-sm transition-shadow`}
-                                style={{
-                                    background: HMS.inputBg,
-                                    color: CloudUI.text,
-                                    border: `1px solid ${HMS.cardBorder}`,
-                                    minHeight: 46,
-                                    fontFamily: CloudUI.fontMono,
-                                    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.02)',
-                                }}
-                                onFocus={(e) => {
-                                    e.currentTarget.style.borderColor = 'rgba(16,185,129,0.55)';
-                                    e.currentTarget.style.boxShadow = '0 0 0 3px rgba(16,185,129,0.16)';
-                                }}
-                                onBlur={(e) => {
-                                    e.currentTarget.style.borderColor = HMS.cardBorder;
-                                    e.currentTarget.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,0.02)';
-                                }}
-                            />
-                            <span
-                                css={tw`block mt-2 text-xs leading-relaxed`}
-                                style={{ color: CloudUI.textMuted }}
-                            >
-                                Par défaut : <span css={tw`font-mono`}>vps-XX.1vps.cc</span>. Laissez vide pour
-                                rétablir ce PTR.
-                            </span>
-                        </label>
-                    </div>
-
-                    <div
-                        css={tw`mt-6 pt-4 flex flex-col-reverse sm:flex-row sm:justify-end gap-2 sm:gap-3`}
-                        style={{ borderTop: `1px solid ${HMS.cardBorder}` }}
-                    >
-                        <GhostButton onClick={() => setEditOpen(false)}>Annuler</GhostButton>
-                        <PrimaryButton onClick={saveRdns} disabled={saving}>
-                            {saving ? 'Enregistrement…' : 'Enregistrer'}
-                        </PrimaryButton>
-                    </div>
+    return (
+        <PageContentBlock title={prefix} description={'Gérez votre préfixe IP, configurez le reverse DNS et visualisez les statistiques.'}>
+            <NetworkPage>
+                <div css={tw`mb-4`}>
+                    <GhostLink to={'/network/ips'}>
+                        <FontAwesomeIcon icon={faArrowLeft} /> Retour aux IPs
+                    </GhostLink>
                 </div>
-            </HmsModal>
-        </NetworkPage>
+
+                <NetworkHeader
+                    icon={Icon.Globe}
+                    title={prefix}
+                    subtitle={'Gérez votre préfixe IP, configurez le reverse DNS et visualisez les statistiques.'}
+                />
+
+                <TabBar>
+                    <TabLink to={base} exact style={tab === 'general' ? tabActiveStyle : undefined} activeStyle={tabActiveStyle}>
+                        Informations générales
+                    </TabLink>
+                    <TabLink to={`${base}/stats`} style={tab === 'stats' ? tabActiveStyle : undefined} activeStyle={tabActiveStyle}>
+                        Statistiques
+                    </TabLink>
+                    <TabLink to={`${base}/analysis`} style={tab === 'analysis' ? tabActiveStyle : undefined} activeStyle={tabActiveStyle}>
+                        Analyse
+                    </TabLink>
+                    <TabLink to={`${base}/attacks`} style={tab === 'attacks' ? tabActiveStyle : undefined} activeStyle={tabActiveStyle}>
+                        Attaques
+                    </TabLink>
+                </TabBar>
+
+                {tab === 'general' && (
+                    <div css={tw`space-y-6`}>
+                        <Panel padded>
+                            <PanelHeader title={'Détails du préfixe'} description={'Informations réseau associées à cette adresse.'} />
+                            <Grid2>
+                                <Field>
+                                    <FieldLabel>Adresse</FieldLabel>
+                                    <FieldValue css={tw`flex items-center gap-2`}>
+                                        <MonoIp>{row.ip}</MonoIp>
+                                        <GhostButton compact onClick={onCopy} title={'Copier'}>
+                                            <FontAwesomeIcon icon={faCopy} />
+                                            {copied ? ' Copié' : ''}
+                                        </GhostButton>
+                                    </FieldValue>
+                                </Field>
+                                <Field>
+                                    <FieldLabel>Service routé</FieldLabel>
+                                    <FieldValue>
+                                        {row.routed && row.service?.uuid ? (
+                                            <GhostLink to={`/server/${row.service.uuid}`}>
+                                                {row.service.name || row.service.uuidShort || row.service.uuid}
+                                            </GhostLink>
+                                        ) : (
+                                            <Badge tone={'neutral'}>Non routé</Badge>
+                                        )}
+                                    </FieldValue>
+                                </Field>
+                                <Field>
+                                    <FieldLabel>Reverse DNS</FieldLabel>
+                                    <FieldValue>{reverse}</FieldValue>
+                                </Field>
+                                <Field>
+                                    <FieldLabel>Allocation</FieldLabel>
+                                    <FieldValue>#{row.allocation_id}</FieldValue>
+                                </Field>
+                                <Field>
+                                    <FieldLabel>Anti-DDoS</FieldLabel>
+                                    <FieldValue>
+                                        <Badge tone={'ok'}>Activé</Badge>
+                                    </FieldValue>
+                                </Field>
+                                <Field>
+                                    <FieldLabel>Statut routage</FieldLabel>
+                                    <FieldValue>
+                                        {row.routed ? (
+                                            <>
+                                                <Badge tone={'ok'}>Routé</Badge>
+                                                <MetaLine css={tw`mt-2`}>Ce préfixe est actuellement routé vers un service.</MetaLine>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Badge tone={'warn'}>Non routé</Badge>
+                                                <MetaLine css={tw`mt-2`}>Aucune route active détectée pour ce préfixe.</MetaLine>
+                                            </>
+                                        )}
+                                    </FieldValue>
+                                </Field>
+                            </Grid2>
+                        </Panel>
+
+                        <Panel padded>
+                            <PanelHeader
+                                title={'PTR / Reverse DNS'}
+                                description={'Associez un nom d’hôte (PTR) à chaque IP pour le reverse DNS.'}
+                            />
+                            <EmptyState
+                                icon={<FontAwesomeIcon icon={faGlobe} />}
+                                title={'Gestion PTR'}
+                                description={
+                                    reverse !== '—'
+                                        ? `PTR actuel : ${reverse}`
+                                        : 'Aucune entrée PTR détectée pour le moment. La modification avancée sera disponible prochainement.'
+                                }
+                            />
+                        </Panel>
+                    </div>
+                )}
+
+                {tab === 'stats' && <NetworkIpStatsTab row={row} prefixLabel={prefix} />}
+                {tab === 'analysis' && <NetworkIpAnalysisTab row={row} prefixLabel={prefix} />}
+
+                {tab === 'attacks' && (
+                    <div css={tw`space-y-6`}>
+                        <Grid3>
+                            <StatCard
+                                label={'Attaques listées'}
+                                value={String(attacks.length)}
+                                icon={<FontAwesomeIcon icon={faShieldAlt} />}
+                            />
+                            <StatCard
+                                label={'En cours'}
+                                value={String(activeCount)}
+                                hint={'Statut actif ou en cours'}
+                                tone={activeCount > 0 ? 'danger' : 'ok'}
+                                icon={<FontAwesomeIcon icon={faShieldAlt} />}
+                            />
+                            <StatCard
+                                label={'Pic observé'}
+                                value={peakBps > 0 ? `${(peakBps / 1e9).toFixed(2)} Gbps` : '—'}
+                                icon={<FontAwesomeIcon icon={faNetworkWired} />}
+                            />
+                        </Grid3>
+
+                        <Panel padded>
+                            <PanelHeader
+                                title={'Historique des attaques'}
+                                description={`Événements DDoS enregistrés pour ${prefix}`}
+                                actions={
+                                    <GhostButton onClick={loadAttacks} disabled={attacksLoading} title={'Actualiser'}>
+                                        <FontAwesomeIcon icon={faSyncAlt} spin={attacksLoading} /> Actualiser
+                                    </GhostButton>
+                                }
+                            />
+
+                            <Toolbar>
+                                <SegmentedControl
+                                    value={attackFilter}
+                                    onChange={(v) => setAttackFilter(v as 'all' | 'active')}
+                                    options={[
+                                        { id: 'all', label: 'Toutes' },
+                                        { id: 'active', label: 'En cours' },
+                                    ]}
+                                />
+                                <SearchField
+                                    value={attackQuery}
+                                    onChange={setAttackQuery}
+                                    placeholder={'Rechercher (ID, dates, type…)'}
+                                />
+                            </Toolbar>
+
+                            {attacksError && (
+                                <div css={tw`mb-4`}>
+                                    <Alert type={'danger'}>{attacksError}</Alert>
+                                </div>
+                            )}
+
+                            {attacksLoading ? (
+                                <div css={tw`flex justify-center py-12`}>
+                                    <Spinner centered />
+                                </div>
+                            ) : filteredAttacks.length === 0 ? (
+                                <EmptyState
+                                    icon={<FontAwesomeIcon icon={faSearch} />}
+                                    title={'Aucune attaque'}
+                                    description={'Aucune attaque enregistrée pour cette période.'}
+                                />
+                            ) : (
+                                <>
+                                    <div css={tw`hidden md:block`}>
+                                        <DataTable
+                                            headers={[
+                                                { key: 'started', label: 'Début' },
+                                                { key: 'ended', label: 'Fin' },
+                                                { key: 'duration', label: 'Durée' },
+                                                { key: 'gbps', label: 'Débit' },
+                                                { key: 'pps', label: 'PPS' },
+                                                { key: 'severity', label: 'Sévérité' },
+                                                { key: 'status', label: 'Statut' },
+                                                { key: 'actions', label: 'Actions', align: 'right' },
+                                            ]}
+                                        >
+                                            {filteredAttacks.map((i) => {
+                                                const active = isActiveIncident(i);
+                                                const bps = Number(i.max_bps) || 0;
+                                                const detailTo = `/network/attacks/${encodeURIComponent(String(i.incident_id))}`;
+                                                return (
+                                                    <tr key={String(i.incident_id)}>
+                                                        <Td>{formatWhen(i.incident_start)}</Td>
+                                                        <Td>{active ? '—' : formatWhen(i.incident_stop)}</Td>
+                                                        <Td>{durationMin(i.incident_start, i.incident_stop)}</Td>
+                                                        <Td accent={severityColor(bps)}>
+                                                            {i.max_bps_formattet || (bps ? `${(bps / 1e9).toFixed(2)} Gbps` : '—')}
+                                                        </Td>
+                                                        <Td>{i.max_pps_formattet || (i.max_pps != null ? String(i.max_pps) : '—')}</Td>
+                                                        <Td>
+                                                            <Badge tone={severityTone(bps)}>
+                                                                {severityTone(bps) === 'danger'
+                                                                    ? 'Élevée'
+                                                                    : severityTone(bps) === 'warn'
+                                                                      ? 'Moyenne'
+                                                                      : 'Faible'}
+                                                            </Badge>
+                                                        </Td>
+                                                        <Td>
+                                                            <Badge tone={active ? 'danger' : 'neutral'}>
+                                                                {active ? 'En cours' : 'Terminée'}
+                                                            </Badge>
+                                                        </Td>
+                                                        <Td align={'right'}>
+                                                            <ActionsMenu
+                                                                label={'Actions'}
+                                                                items={[
+                                                                    {
+                                                                        key: 'view',
+                                                                        label: "Voir l'attaque",
+                                                                        icon: faEye,
+                                                                        onClick: () => history.push(detailTo),
+                                                                    },
+                                                                ]}
+                                                            />
+                                                        </Td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </DataTable>
+                                    </div>
+
+                                    <div css={tw`md:hidden space-y-3`}>
+                                        {filteredAttacks.map((i) => {
+                                            const active = isActiveIncident(i);
+                                            const bps = Number(i.max_bps) || 0;
+                                            const detailTo = `/network/attacks/${encodeURIComponent(String(i.incident_id))}`;
+                                            return (
+                                                <MobileCard key={String(i.incident_id)}>
+                                                    <div css={tw`flex items-start justify-between gap-3 mb-3`}>
+                                                        <div>
+                                                            <div css={tw`text-sm font-semibold`} style={{ color: CloudUI.text }}>
+                                                                {formatWhen(i.incident_start)}
+                                                            </div>
+                                                            <MetaLine>{i.attack_type || i.protocol || 'DDoS'}</MetaLine>
+                                                        </div>
+                                                        <Badge tone={active ? 'danger' : 'neutral'}>
+                                                            {active ? 'En cours' : 'Terminée'}
+                                                        </Badge>
+                                                    </div>
+                                                    <MobileMetaGrid
+                                                        items={[
+                                                            {
+                                                                label: 'Débit',
+                                                                value: i.max_bps_formattet || (bps ? `${(bps / 1e9).toFixed(2)} Gbps` : '—'),
+                                                            },
+                                                            {
+                                                                label: 'PPS',
+                                                                value: i.max_pps_formattet || (i.max_pps != null ? String(i.max_pps) : '—'),
+                                                            },
+                                                            { label: 'Durée', value: durationMin(i.incident_start, i.incident_stop) },
+                                                            {
+                                                                label: 'Sévérité',
+                                                                value:
+                                                                    severityTone(bps) === 'danger'
+                                                                        ? 'Élevée'
+                                                                        : severityTone(bps) === 'warn'
+                                                                          ? 'Moyenne'
+                                                                          : 'Faible',
+                                                            },
+                                                        ]}
+                                                    />
+                                                    <div css={tw`mt-3 flex justify-end`}>
+                                                        <PrimaryButton onClick={() => history.push(detailTo)}>
+                                                            <FontAwesomeIcon icon={faEye} /> Voir
+                                                        </PrimaryButton>
+                                                    </div>
+                                                </MobileCard>
+                                            );
+                                        })}
+                                    </div>
+
+                                    <MetaLine css={tw`mt-4`}>
+                                        {filteredAttacks.length} affichée(s) sur {attacks.length}
+                                    </MetaLine>
+                                </>
+                            )}
+                        </Panel>
+                    </div>
+                )}
+            </NetworkPage>
+        </PageContentBlock>
     );
 };
