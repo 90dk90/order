@@ -7,7 +7,7 @@
 # Images: Hetzner S3 only (public HTTP or private rclone). No Lumen API.
 set -euo pipefail
 
-VERSION="0.5.0"
+VERSION="0.6.0"
 HOME_DIR="${HOME_DIR:-/home/container}"
 CACHE_DIR="${CACHE_DIR:-/opt/1vps/lumenvm-net/vm-images}"
 WORKDIR="${HOME_DIR}"
@@ -16,6 +16,7 @@ cd "$WORKDIR"
 log()  { printf ' \033[32m●\033[37m %s\033[0m\n' "$*"; }
 info() { printf ' \033[34m●\033[37m %s\033[0m\n' "$*"; }
 err()  { printf ' \033[31m●\033[37m %s\033[0m\n' "$*" >&2; }
+step() { info "[$1] $2"; }
 
 banner() {
   printf '\033[34m'
@@ -55,12 +56,17 @@ SEED_ISO="${WORKDIR}/.1vps-seed.iso"
 CIDATA_DIR="${WORKDIR}/.1vps-cidata"
 STATE_FILE="${WORKDIR}/.1vps-vm-state"
 SERIAL_LOG="${WORKDIR}/serial.log"
+NOVNC_LOG="${WORKDIR}/novnc.log"
 
 # Hetzner Object Storage (fsn1) — bucket 1vps-vm-images
 VM_IMAGE_BASE="${VM_IMAGE_BASE:-https://fsn1.your-objectstorage.com/1vps-vm-images}"
 S3_REMOTE="${S3_REMOTE:-hetzner:1vps-vm-images}"
 RCLONE_BIN="${RCLONE_BIN:-/opt/1vps/lumenvm-net/bin/rclone}"
 RCLONE_CONFIG="${RCLONE_CONFIG:-/opt/1vps/lumenvm-net/rclone/rclone.conf}"
+
+VNC_PORT="${VNC_PORT:-5900}"
+NOVNC_PORT="${NOVNC_PORT:-6080}"
+SPICE_PORT="${SPICE_PORT:-5901}"
 
 SUPPORTED_LINUX=(
   debian-10 debian-11 debian-12 debian-13
@@ -80,9 +86,20 @@ is_windows_os() {
   esac
 }
 
-# Private ACL on S3 — must use rclone credentials, never public HTTP.
 is_private_s3_os() {
   is_windows_os "$1"
+}
+
+# Ports where QEMU/websockify listen in the container (not guest).
+is_display_port() {
+  case "$1" in
+    5900|5901|6080|"$VNC_PORT"|"$NOVNC_PORT"|"$SPICE_PORT") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+display_mode_norm() {
+  printf '%s' "$DISPLAY_MODE" | tr '[:upper:]' '[:lower:]'
 }
 
 image_url_for() {
@@ -114,6 +131,36 @@ is_valid_qcow() {
   qemu-img info "$f" >/dev/null 2>&1
 }
 
+refresh_checksums() {
+  local sums="${CACHE_DIR}/SHA256SUMS" url tmp
+  url="${VM_IMAGE_BASE%/}/SHA256SUMS"
+  tmp="${sums}.tmp"
+  mkdir -p "$CACHE_DIR"
+  if command -v curl >/dev/null 2>&1; then
+    curl -4 -fsSL --connect-timeout 10 -o "$tmp" "$url" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  else
+    wget -4 -q -O "$tmp" "$url" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  fi
+  [[ -s "$tmp" ]] && mv -f "$tmp" "$sums" || rm -f "$tmp"
+}
+
+# Returns 0 OK / missing sums; 1 mismatch (caller deletes & re-fetches).
+verify_checksum() {
+  local os="$1" file="$2"
+  local sums="${CACHE_DIR}/SHA256SUMS" expected actual
+  [[ -f "$sums" ]] || return 0
+  expected=$(awk -v f="${os}.qcow2" '$2==f {print $1; exit}' "$sums")
+  [[ -n "$expected" ]] || return 0
+  step "…" "Verifying SHA256 for ${os}"
+  actual=$(sha256sum "$file" | awk '{print $1}')
+  if [[ "$actual" != "$expected" ]]; then
+    err "SHA256 mismatch for ${os} (expected ${expected:0:12}… got ${actual:0:12}…)"
+    return 1
+  fi
+  log "SHA256 OK (${actual:0:12}…)"
+  return 0
+}
+
 fetch_from_s3_public() {
   local os="$1" tmp="$2"
   local url
@@ -121,7 +168,7 @@ fetch_from_s3_public() {
   info "Downloading ${os} from S3 (public)"
   info "${url}"
   if command -v curl >/dev/null 2>&1; then
-    curl -4 -fL --retry 5 --retry-delay 2 --connect-timeout 30 -o "$tmp" "$url"
+    curl -4 -fL --retry 5 --retry-delay 2 --connect-timeout 30 --progress-bar -o "$tmp" "$url"
   else
     wget -4 -O "$tmp" "$url"
   fi
@@ -132,10 +179,10 @@ fetch_from_s3_private() {
   local remote="${S3_REMOTE%/}/${os}.qcow2"
   [[ -x "$RCLONE_BIN" ]] || { err "rclone missing at ${RCLONE_BIN}"; exit 1; }
   [[ -f "$RCLONE_CONFIG" ]] || { err "rclone config missing at ${RCLONE_CONFIG}"; exit 1; }
-  info "Downloading ${os} from S3 (private rclone)"
+  info "Downloading ${os} from S3 (private rclone) — large image, please wait"
   info "${remote}"
   "$RCLONE_BIN" --config "$RCLONE_CONFIG" copyto "$remote" "$tmp" \
-    --retries 5 --low-level-retries 10 --stats 30s --stats-one-line
+    --retries 5 --low-level-retries 10 --stats 15s --stats-one-line
 }
 
 fetch_image() {
@@ -157,11 +204,17 @@ fetch_image() {
     [[ "$known" -eq 1 ]] || { err "Unsupported OS=${os} (not in S3 catalog)"; exit 1; }
   fi
 
-  # Cache only after a prior S3 download — never use foreign/Lumen paths.
+  refresh_checksums
+
   if is_valid_qcow "$cache"; then
-    log "Using S3 cache ${cache}"
-    cp -f "$cache" "$dest"
-    return 0
+    if verify_checksum "$os" "$cache"; then
+      log "Using S3 cache ${cache} ($(du -h "$cache" | awk '{print $1}'))"
+      step "…" "Copying cached image into server directory"
+      cp -f "$cache" "$dest"
+      return 0
+    fi
+    err "Dropping corrupt cache ${cache}"
+    rm -f "$cache"
   fi
 
   rm -f "$tmp"
@@ -173,6 +226,10 @@ fetch_image() {
 
   if ! is_valid_qcow "$tmp"; then
     err "Downloaded file is not a valid disk image"
+    rm -f "$tmp"
+    exit 1
+  fi
+  if ! verify_checksum "$os" "$tmp"; then
     rm -f "$tmp"
     exit 1
   fi
@@ -189,6 +246,8 @@ resize_disk() {
   if [[ -n "$cur" && "$cur" -lt "$want" ]]; then
     info "Resizing disk to ${gb}G"
     qemu-img resize "$f" "${gb}G"
+  else
+    info "Disk size OK (≥ ${gb}G)"
   fi
 }
 
@@ -202,7 +261,6 @@ instance-id: ${iid}
 local-hostname: ${OS_HOSTNAME}
 EOF
 
-  # Netplan match must be ONE pattern per ethernet stanza.
   cat >"${CIDATA_DIR}/network-config" <<'EOF'
 version: 2
 ethernets:
@@ -263,12 +321,12 @@ EOF
   log "Cloud-init seed ready"
 }
 
-# Cloudbase-Init NoCloud for pre-activated Windows images (password + hostname).
 write_cidata_windows() {
   rm -rf "$CIDATA_DIR"
   mkdir -p "$CIDATA_DIR"
 
   local iid="${P_SERVER_UUID}-$(date +%s)"
+  # Cloudbase-Init NoCloud: admin_pass + hostname in meta-data (widely supported).
   cat >"${CIDATA_DIR}/meta-data" <<EOF
 instance-id: ${iid}
 hostname: ${OS_HOSTNAME}
@@ -286,13 +344,15 @@ users:
     primary_group: Administrators
     passwd: ${OS_PASSWORD}
     inactive: false
+runcmd:
+  - ['powershell.exe', '-Command', "try { net user Administrator '${OS_PASSWORD}' } catch {}"]
 EOF
 
-  # Empty network-config keeps some Cloudbase-Init builds happy
   : >"${CIDATA_DIR}/network-config"
 
   pack_cidata_iso
-  log "Cloudbase-Init seed ready (password/hostname)"
+  log "Windows seed ready (Cloudbase-Init password/hostname if present in image)"
+  info "Note: password apply needs Cloudbase-Init in the Windows image; else use default image password."
 }
 
 pack_cidata_iso() {
@@ -320,45 +380,52 @@ pack_cidata_iso() {
   fi
 }
 
-# Merge DISPLAY_MODE into forwarded ports (ssh/rdp/both).
+# Guest service ports only — never hostfwd display ports (wrapper would DNAT wrongly).
 effective_ports() {
   local raw="${ADDITIONAL_PORTS// /}"
-  local mode
-  mode=$(printf '%s' "$DISPLAY_MODE" | tr '[:upper:]' '[:lower:]')
+  local mode p cleaned=""
+  mode=$(display_mode_norm)
   case "$mode" in
     ssh)  raw="${raw:+$raw,}22" ;;
     rdp)  raw="${raw:+$raw,}3389" ;;
     both) raw="${raw:+$raw,}22,3389" ;;
-    vnc|novnc|spice|none|"") ;;
+    vnc|novnc|spice)
+      # Graphical console in container; keep guest SSH/RDP for OS access.
+      if is_windows_os "$VM_OS"; then
+        raw="${raw:+$raw,}3389"
+      else
+        raw="${raw:+$raw,}22"
+      fi
+      ;;
+    none|"") ;;
     *) ;;
   esac
-  # OS defaults if still empty
   if [[ -z "$raw" ]]; then
-    if is_windows_os "$VM_OS"; then
-      raw="3389"
-    else
-      raw="22"
-    fi
+    if is_windows_os "$VM_OS"; then raw="3389"; else raw="22"; fi
   fi
-  # Always ensure RDP for Windows / SSH for Linux regardless of mode typos
   if is_windows_os "$VM_OS"; then
     [[ ",${raw}," == *",3389,"* ]] || raw="${raw},3389"
   else
     [[ ",${raw}," == *",22,"* ]] || raw="${raw},22"
   fi
-  printf '%s' "$raw"
+  IFS=',' read -ra parts <<<"$raw"
+  for p in "${parts[@]}"; do
+    [[ "$p" =~ ^[0-9]+$ ]] || continue
+    is_display_port "$p" && continue
+    cleaned="${cleaned:+$cleaned,}$p"
+  done
+  printf '%s' "$cleaned"
 }
 
 parse_ports() {
   local raw
   raw="$(effective_ports)"
   IFS=',' read -ra parts <<<"$raw"
-  local out=() p
+  local p
   for p in "${parts[@]}"; do
     [[ "$p" =~ ^[0-9]+$ ]] || continue
-    out+=("$p")
-  done
-  printf '%s\n' "${out[@]}" | awk 'NF && !a[$0]++'
+    printf '%s\n' "$p"
+  done | awk 'NF && !a[$0]++'
 }
 
 build_hostfwd() {
@@ -379,20 +446,108 @@ smp_count() {
   echo "$n"
 }
 
+find_ovmf() {
+  local ovmf
+  for ovmf in \
+    /usr/share/OVMF/OVMF_CODE_4M.fd \
+    /usr/share/OVMF/OVMF_CODE.fd \
+    /opt/1vps/lumenvm-net/ovmf/OVMF_CODE_4M.fd \
+    /opt/1vps/lumenvm-net/ovmf/OVMF_CODE.fd \
+    /OVMF.fd
+  do
+    if [[ -f "$ovmf" ]]; then
+      printf '%s' "$ovmf"
+      return 0
+    fi
+  done
+  return 1
+}
+
+start_novnc_proxy() {
+  local ws
+  ws="$(command -v websockify || true)"
+  [[ -n "$ws" ]] || { err "websockify missing — cannot start noVNC"; return 1; }
+  [[ -d /usr/share/novnc ]] || { err "/usr/share/novnc missing"; return 1; }
+  : >"$NOVNC_LOG"
+  # Bind noVNC publicly; VNC itself stays on localhost.
+  setsid "$ws" --web=/usr/share/novnc \
+    "0.0.0.0:${NOVNC_PORT}" "127.0.0.1:${VNC_PORT}" \
+    >>"$NOVNC_LOG" 2>&1 </dev/null &
+  disown $! 2>/dev/null || true
+  sleep 0.3
+  log "noVNC proxy on :${NOVNC_PORT} → 127.0.0.1:${VNC_PORT}"
+}
+
+announce_display() {
+  local mode ip
+  mode=$(display_mode_norm)
+  ip="${SERVER_IP:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
+  case "$mode" in
+    vnc)
+      log "VNC: ${ip}:${VNC_PORT} (allocate port ${VNC_PORT} on the dedicated IP)"
+      ;;
+    novnc)
+      log "noVNC: http://${ip}:${NOVNC_PORT}/vnc.html (allocate port ${NOVNC_PORT})"
+      log "Panel xterm = serial console; browser graphics = noVNC URL above"
+      ;;
+    spice)
+      log "SPICE: ${ip}:${SPICE_PORT} (remote-viewer / spicy; allocate ${SPICE_PORT})"
+      ;;
+    ssh|rdp|both|none|"")
+      log "Panel console = guest serial (ttyS0). Graphics: set DISPLAY_MODE=novnc|vnc|spice"
+      ;;
+  esac
+}
+
+apply_display_args() {
+  # Append QEMU display-related args to array name passed by caller via nameref-like globals.
+  local mode
+  mode=$(display_mode_norm)
+  case "$mode" in
+    vnc)
+      DISPLAY_ARGS+=(-vga std)
+      if [[ -n "$OS_PASSWORD" ]]; then
+        DISPLAY_ARGS+=(-object "secret,id=secv0,data=${OS_PASSWORD}")
+        DISPLAY_ARGS+=(-vnc "0.0.0.0:$((VNC_PORT - 5900)),password-secret=secv0")
+      else
+        DISPLAY_ARGS+=(-vnc "0.0.0.0:$((VNC_PORT - 5900))")
+      fi
+      ;;
+    novnc)
+      DISPLAY_ARGS+=(-vga std)
+      DISPLAY_ARGS+=(-vnc "127.0.0.1:$((VNC_PORT - 5900))")
+      start_novnc_proxy || true
+      ;;
+    spice)
+      DISPLAY_ARGS+=(-vga qxl)
+      DISPLAY_ARGS+=(-spice "port=${SPICE_PORT},addr=0.0.0.0,disable-ticketing=on")
+      DISPLAY_ARGS+=(-device virtio-serial-pci)
+      ;;
+    *)
+      ;;
+  esac
+}
+
 boot_vm() {
   info "Booting ${VM_OS}"
   local mem="${SERVER_MEMORY}"
-  local smp hostfwd lip
+  local smp hostfwd lip mode
   smp=$(smp_count)
   hostfwd=$(build_hostfwd)
+  mode=$(display_mode_norm)
   lip=$(hostname -I 2>/dev/null | awk '{print $1}')
-  [[ -n "$lip" ]] && log "The local ip adress is ${lip}"
-  log "Forwarding user ports (host wrapper replaces NIC → TAP)."
-  info "DISPLAY_MODE=${DISPLAY_MODE}"
+  [[ -n "$lip" ]] && log "Container IP ${lip}"
+  log "Guest port forwards (TAP DNAT): $(effective_ports)"
+  info "DISPLAY_MODE=${mode}"
 
   mkdir -p "${WORKDIR}/shared"
   : >"${SERIAL_LOG}"
 
+  DISPLAY_ARGS=()
+  apply_display_args
+  announce_display
+
+  # Serial on stdio → Wings panel console (docker attach). Also keep a file copy via second UART.
   local args=(
     -name "1vps-${P_SERVER_UUID}"
     -m "${mem}M"
@@ -400,6 +555,7 @@ boot_vm() {
     -cpu host
     -enable-kvm
     -display none
+    -serial stdio
     -serial "file:${SERIAL_LOG}"
     -usb -device usb-tablet
     -smbios "type=1,manufacturer=1VPS,product=1vps-vm,version=${VERSION},serial=${P_SERVER_UUID}"
@@ -408,9 +564,9 @@ boot_vm() {
     -device "virtio-net-pci,netdev=net0"
     -device "virtio-balloon"
   )
+  args+=("${DISPLAY_ARGS[@]+"${DISPLAY_ARGS[@]}"}")
 
   if is_windows_os "$VM_OS"; then
-    # Match Lumen: IDE disk; wrapper adds balloon ISO. Attach cidata for password.
     args+=(-drive "file=${DISK_FILE},format=qcow2")
     if [[ -f "$SEED_ISO" ]]; then
       args+=(-drive "file=${SEED_ISO},media=cdrom,readonly=on")
@@ -424,12 +580,12 @@ boot_vm() {
 
   if [[ "$UEFI" == "1" ]]; then
     local ovmf
-    for ovmf in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd /OVMF.fd; do
-      if [[ -f "$ovmf" ]]; then
-        args+=(-drive "if=pflash,format=raw,readonly=on,file=${ovmf}")
-        break
-      fi
-    done
+    if ovmf=$(find_ovmf); then
+      info "UEFI firmware: ${ovmf}"
+      args+=(-drive "if=pflash,format=raw,readonly=on,file=${ovmf}")
+    else
+      err "UEFI=1 but no OVMF firmware found — booting SeaBIOS"
+    fi
   fi
 
   {
@@ -438,10 +594,14 @@ boot_vm() {
     echo "version=${VERSION}"
     echo "server_ip=${SERVER_IP}"
     echo "disk_gb=${OS_DISKSIZE}"
-    echo "display_mode=${DISPLAY_MODE}"
+    echo "display_mode=${mode}"
+    echo "vnc_port=${VNC_PORT}"
+    echo "novnc_port=${NOVNC_PORT}"
+    echo "spice_port=${SPICE_PORT}"
   } >"$STATE_FILE"
 
-  info "Lancement de 1vps-vm"
+  info "Lancement de 1vps-vm ${VERSION}"
+  log "Panel Console = serial ttyS0 (login after cloud-init)"
   exec qemu-system-x86_64 "${args[@]}"
 }
 
@@ -449,10 +609,12 @@ main() {
   banner
   need_cmd qemu-system-x86_64
   need_cmd qemu-img
+
+  step "1/5" "Disk quota"
   normalize_disksize
 
   log "Checking the current installation."
-  info "OS=${VM_OS} disk=${OS_DISKSIZE}G mem=${SERVER_MEMORY}M ip=${SERVER_IP:-n/a}"
+  info "OS=${VM_OS} disk=${OS_DISKSIZE}G mem=${SERVER_MEMORY}M ip=${SERVER_IP:-n/a} mode=${DISPLAY_MODE}"
 
   if [[ -e "$DISK_FILE" ]] && ! is_valid_qcow "$DISK_FILE"; then
     err "Removing invalid disk ${DISK_FILE}"
@@ -472,26 +634,34 @@ main() {
     rm -rf "$CIDATA_DIR"
   fi
 
+  step "2/5" "OS image (S3)"
   local first_boot=0
   if ! is_valid_qcow "$DISK_FILE"; then
     first_boot=1
     fetch_image "$VM_OS" "$DISK_FILE"
   else
-    log "Existing disk found"
+    log "Existing disk found ($(du -h "$DISK_FILE" | awk '{print $1}'))"
   fi
 
+  step "3/5" "Resize disk"
   resize_disk "$DISK_FILE" "$OS_DISKSIZE"
 
+  step "4/5" "Provisioning"
   if is_windows_os "$VM_OS"; then
     if [[ "$first_boot" -eq 1 || ! -f "$SEED_ISO" || "$FORCE_PROVISION" == "1" ]]; then
-      info "Provisioning Windows (Cloudbase-Init password/hostname)."
+      info "Provisioning Windows seed (password/hostname)."
       write_cidata_windows
+    else
+      log "Windows seed already present"
     fi
   elif [[ "$first_boot" -eq 1 || ! -f "$SEED_ISO" ]]; then
-    info "Provisioning."
+    info "Provisioning cloud-init."
     write_cidata_linux
+  else
+    log "Cloud-init seed already present"
   fi
 
+  step "5/5" "Boot"
   boot_vm
 }
 
