@@ -57,5 +57,13 @@ Warm local cache from S3:
 ```bash
 install -m 0755 agent/1vps-vm /opt/1vps/lumenvm-net/bin/1vps-vm
 install -m 0755 scripts/*.sh /opt/1vps/lumenvm-net/bin/
-docker build --build-arg VM_OS=debian-12 -t ghcr.io/david1117dev/lumenvm:1vps-debian-12 -f docker/Dockerfile docker
+# Build every panel OS tag (ENTRYPOINT → 1vps-vm)
+./docker/build-all-tags.sh
 ```
+
+Panel egg **VM Linux/Windows** (`id=77`) must point docker images at
+`ghcr.io/david1117dev/lumenvm:1vps-<os>` (not the stock Lumen tags).
+
+Host image cache: bind-mount `/mnt/gamedata/pterodactyl/1vps-vm-templates`
+→ `/opt/1vps/lumenvm-net/vm-images` so containers see warm qcow2 without
+calling `api.lumenvm.cloud`.
