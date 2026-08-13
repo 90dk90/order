@@ -7,7 +7,7 @@
 # Images: Hetzner S3 only (public HTTP or private rclone). No Lumen API.
 set -euo pipefail
 
-VERSION="0.6.5"
+VERSION="0.7.0"
 HOME_DIR="${HOME_DIR:-/home/container}"
 CACHE_DIR="${CACHE_DIR:-/opt/1vps/lumenvm-net/vm-images}"
 WORKDIR="${HOME_DIR}"
@@ -47,6 +47,7 @@ OS_HOSTNAME="${OS_HOSTNAME:-1vpsvm}"
 OS_PUBKEY="${OS_PUBKEY:-}"
 OS_DISKSIZE="${OS_DISKSIZE:-50}"
 SERVER_MEMORY="${SERVER_MEMORY:-2048}"
+SERVER_DISK="${SERVER_DISK:-}"
 SERVER_IP="${SERVER_IP:-}"
 ADDITIONAL_PORTS="${ADDITIONAL_PORTS:-}"
 UEFI="${UEFI:-0}"
@@ -54,6 +55,8 @@ PACKAGE_UPDATE="${PACKAGE_UPDATE:-0}"
 DISPLAY_MODE="${DISPLAY_MODE:-ssh}"
 P_SERVER_UUID="${P_SERVER_UUID:-unknown}"
 FORCE_PROVISION="${FORCE_PROVISION:-0}"
+READY_TIMEOUT="${READY_TIMEOUT:-180}"
+QEMU_MEM_OVERHEAD="${QEMU_MEM_OVERHEAD:-}"
 
 DISK_FILE="${WORKDIR}/${VM_OS}.qcow2"
 SEED_ISO="${WORKDIR}/.1vps-seed.iso"
@@ -62,7 +65,6 @@ STATE_FILE="${WORKDIR}/.1vps-vm-state"
 SERIAL_LOG="${WORKDIR}/serial.log"
 NOVNC_LOG="${WORKDIR}/novnc.log"
 
-# Hetzner Object Storage (fsn1) — bucket 1vps-vm-images
 VM_IMAGE_BASE="${VM_IMAGE_BASE:-https://fsn1.your-objectstorage.com/1vps-vm-images}"
 S3_REMOTE="${S3_REMOTE:-hetzner:1vps-vm-images}"
 RCLONE_BIN="${RCLONE_BIN:-/opt/1vps/lumenvm-net/bin/rclone}"
@@ -94,7 +96,6 @@ is_private_s3_os() {
   is_windows_os "$1"
 }
 
-# Ports where QEMU/websockify listen in the container (not guest).
 is_display_port() {
   case "$1" in
     5900|5901|6080|"$VNC_PORT"|"$NOVNC_PORT"|"$SPICE_PORT") return 0 ;;
@@ -111,22 +112,19 @@ image_url_for() {
   printf '%s/%s.qcow2' "${VM_IMAGE_BASE%/}" "$os"
 }
 
-# Panel disk is MiB (egg default {{server.build.disk}} — often stored literally
-# until dash sync cron replaces it with servers.disk). Manual values stay in GiB.
+# Panel injects SERVER_DISK / OS_DISKSIZE as MiB via EnvironmentService.
+# Manual GiB values (<1024) still accepted.
 normalize_disksize() {
   local v="${OS_DISKSIZE}"
-  # Unresolved panel placeholder / empty → try alternate env
   if [[ -z "$v" || "$v" == *"{{"* || "$v" == *"}}"* ]]; then
-    v="${SERVER_DISKSIZE:-${SERVER_DISK:-${P_SERVER_DISK:-}}}"
+    v="${SERVER_DISK:-${SERVER_DISKSIZE:-${P_SERVER_DISK:-}}}"
   fi
   if [[ -z "$v" || "$v" == *"{{"* || "$v" == *"}}"* ]]; then
-    err "Invalid OS_DISKSIZE=${OS_DISKSIZE}"
-    err "Panel must sync OS_DISKSIZE from server disk quota (MiB). Retry in ~1 min or restart."
+    err "Invalid OS_DISKSIZE=${OS_DISKSIZE} (unresolved). Need numeric MiB/GiB."
     exit 1
   fi
   if ! [[ "$v" =~ ^[0-9]+$ ]]; then
     err "Invalid OS_DISKSIZE=${OS_DISKSIZE}"
-    err "Expected a number (MiB from panel or GiB manual)."
     exit 1
   fi
   if [[ "$v" -ge 1024 ]]; then
@@ -134,11 +132,29 @@ normalize_disksize() {
     [[ "$v" -lt 1 ]] && v=1
     info "OS_DISKSIZE from panel disk quota → ${v}G"
   fi
-  if [[ "$v" -lt 1 ]]; then
-    err "Invalid OS_DISKSIZE=${OS_DISKSIZE}"
-    exit 1
-  fi
+  [[ "$v" -lt 1 ]] && { err "Invalid disk size"; exit 1; }
   OS_DISKSIZE="$v"
+}
+
+# Scale QEMU headroom with plan size (Wings cgroup == SERVER_MEMORY).
+qemu_memory_mib() {
+  local mem="${SERVER_MEMORY}" overhead
+  if [[ -n "$QEMU_MEM_OVERHEAD" && "$QEMU_MEM_OVERHEAD" =~ ^[0-9]+$ ]]; then
+    overhead="$QEMU_MEM_OVERHEAD"
+  elif [[ "$mem" -le 2048 ]]; then
+    overhead=256
+  elif [[ "$mem" -le 4096 ]]; then
+    overhead=384
+  elif [[ "$mem" -le 8192 ]]; then
+    overhead=768
+  else
+    overhead=1024
+  fi
+  if [[ "$mem" =~ ^[0-9]+$ ]] && [[ "$mem" -gt $((overhead + 512)) ]]; then
+    echo $((mem - overhead))
+  else
+    echo "$mem"
+  fi
 }
 
 is_valid_qcow() {
@@ -163,7 +179,6 @@ refresh_checksums() {
   [[ -s "$tmp" ]] && mv -f "$tmp" "$sums" || rm -f "$tmp"
 }
 
-# Returns 0 OK / missing sums; 1 mismatch (caller deletes & re-fetches).
 verify_checksum() {
   local os="$1" file="$2"
   local sums="${CACHE_DIR}/SHA256SUMS" expected actual
@@ -345,12 +360,13 @@ write_cidata_windows() {
   mkdir -p "$CIDATA_DIR"
 
   local iid="${P_SERVER_UUID}-$(date +%s)"
-  # Cloudbase-Init NoCloud: admin_pass + hostname in meta-data (widely supported).
+  # Cloudbase-Init NoCloud + Unattend-style hints for preactivated images.
   cat >"${CIDATA_DIR}/meta-data" <<EOF
 instance-id: ${iid}
 hostname: ${OS_HOSTNAME}
 local-hostname: ${OS_HOSTNAME}
 admin_pass: ${OS_PASSWORD}
+admin_username: Administrator
 EOF
 
   cat >"${CIDATA_DIR}/user-data" <<EOF
@@ -363,43 +379,69 @@ users:
     primary_group: Administrators
     passwd: ${OS_PASSWORD}
     inactive: false
+write_files:
+  - path: C:\\Windows\\Setup\\Scripts\\1vps-setpass.cmd
+    permissions: '0644'
+    content: |
+      @echo off
+      net user Administrator "${OS_PASSWORD}"
+      net user Administrator /active:yes
 runcmd:
-  - ['powershell.exe', '-Command', "try { net user Administrator '${OS_PASSWORD}' } catch {}"]
+  - ['cmd.exe', '/c', 'net user Administrator "${OS_PASSWORD}"']
+  - ['cmd.exe', '/c', 'net user Administrator /active:yes']
+  - ['powershell.exe', '-Command', "Rename-Computer -NewName '${OS_HOSTNAME}' -Force -ErrorAction SilentlyContinue"]
+EOF
+
+  # Also drop a classic unattend fragment some images pick up from cidata
+  cat >"${CIDATA_DIR}/unattend.xml" <<EOF
+<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64"
+      publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <UserAccounts>
+        <AdministratorPassword>
+          <Value>${OS_PASSWORD}</Value>
+          <PlainText>true</PlainText>
+        </AdministratorPassword>
+      </UserAccounts>
+      <ComputerName>${OS_HOSTNAME}</ComputerName>
+    </component>
+  </settings>
+</unattend>
 EOF
 
   : >"${CIDATA_DIR}/network-config"
 
   pack_cidata_iso
-  log "Windows seed ready (Cloudbase-Init password/hostname if present in image)"
-  info "Note: password apply needs Cloudbase-Init in the Windows image; else use default image password."
+  log "Windows seed ready (password/hostname via Cloudbase-Init / unattend)"
+  info "Login: Administrator / (OS_PASSWORD). Needs Cloudbase-Init or setup scripts in image."
 }
 
 pack_cidata_iso() {
   rm -f "$SEED_ISO"
+  local files=(
+    "user-data=${CIDATA_DIR}/user-data"
+    "meta-data=${CIDATA_DIR}/meta-data"
+    "network-config=${CIDATA_DIR}/network-config"
+  )
+  [[ -f "${CIDATA_DIR}/unattend.xml" ]] && files+=("unattend.xml=${CIDATA_DIR}/unattend.xml")
+
   if command -v cloud-localds >/dev/null 2>&1 && [[ -s "${CIDATA_DIR}/network-config" ]]; then
     cloud-localds --network-config "${CIDATA_DIR}/network-config" \
       "$SEED_ISO" "${CIDATA_DIR}/user-data" "${CIDATA_DIR}/meta-data"
   elif command -v genisoimage >/dev/null 2>&1; then
     genisoimage -output "$SEED_ISO" -volid cidata -joliet -rock \
-      -graft-points \
-      "user-data=${CIDATA_DIR}/user-data" \
-      "meta-data=${CIDATA_DIR}/meta-data" \
-      "network-config=${CIDATA_DIR}/network-config" \
-      >/dev/null 2>&1
+      -graft-points "${files[@]}" >/dev/null 2>&1
   elif command -v mkisofs >/dev/null 2>&1; then
     mkisofs -output "$SEED_ISO" -volid cidata -joliet -rock \
-      -graft-points \
-      "user-data=${CIDATA_DIR}/user-data" \
-      "meta-data=${CIDATA_DIR}/meta-data" \
-      "network-config=${CIDATA_DIR}/network-config" \
-      >/dev/null 2>&1
+      -graft-points "${files[@]}" >/dev/null 2>&1
   else
     err "Need genisoimage/mkisofs/cloud-localds to build cidata ISO"
     exit 1
   fi
 }
 
-# Guest service ports only — never hostfwd display ports (wrapper would DNAT wrongly).
 effective_ports() {
   local raw="${ADDITIONAL_PORTS// /}"
   local mode p cleaned=""
@@ -409,7 +451,6 @@ effective_ports() {
     rdp)  raw="${raw:+$raw,}3389" ;;
     both) raw="${raw:+$raw,}22,3389" ;;
     vnc|novnc|spice)
-      # Graphical console in container; keep guest SSH/RDP for OS access.
       if is_windows_os "$VM_OS"; then
         raw="${raw:+$raw,}3389"
       else
@@ -474,10 +515,7 @@ find_ovmf() {
     /opt/1vps/lumenvm-net/ovmf/OVMF_CODE.fd \
     /OVMF.fd
   do
-    if [[ -f "$ovmf" ]]; then
-      printf '%s' "$ovmf"
-      return 0
-    fi
+    [[ -f "$ovmf" ]] && { printf '%s' "$ovmf"; return 0; }
   done
   return 1
 }
@@ -488,7 +526,6 @@ start_novnc_proxy() {
   [[ -n "$ws" ]] || { err "websockify missing — cannot start noVNC"; return 1; }
   [[ -d /usr/share/novnc ]] || { err "/usr/share/novnc missing"; return 1; }
   : >"$NOVNC_LOG"
-  # Bind noVNC publicly; VNC itself stays on localhost.
   setsid "$ws" --web=/usr/share/novnc \
     "0.0.0.0:${NOVNC_PORT}" "127.0.0.1:${VNC_PORT}" \
     >>"$NOVNC_LOG" 2>&1 </dev/null &
@@ -502,24 +539,14 @@ announce_display() {
   mode=$(display_mode_norm)
   ip="${SERVER_IP:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
   case "$mode" in
-    vnc)
-      log "VNC: ${ip}:${VNC_PORT} (allocate port ${VNC_PORT} on the dedicated IP)"
-      ;;
-    novnc)
-      log "noVNC: http://${ip}:${NOVNC_PORT}/vnc.html (allocate port ${NOVNC_PORT})"
-      log "Panel xterm = serial console; browser graphics = noVNC URL above"
-      ;;
-    spice)
-      log "SPICE: ${ip}:${SPICE_PORT} (remote-viewer / spicy; allocate ${SPICE_PORT})"
-      ;;
-    ssh|rdp|both|none|"")
-      log "Panel console = guest serial (ttyS0). Graphics: set DISPLAY_MODE=novnc|vnc|spice"
-      ;;
+    vnc)   log "VNC: ${ip}:${VNC_PORT}" ;;
+    novnc) log "noVNC: http://${ip}:${NOVNC_PORT}/vnc.html" ;;
+    spice) log "SPICE: ${ip}:${SPICE_PORT}" ;;
+    *)     log "Guest access via SSH/RDP on ${ip:-dedicated IP}" ;;
   esac
 }
 
 apply_display_args() {
-  # Append QEMU display-related args to array name passed by caller via nameref-like globals.
   local mode
   mode=$(display_mode_norm)
   case "$mode" in
@@ -542,21 +569,35 @@ apply_display_args() {
       DISPLAY_ARGS+=(-spice "port=${SPICE_PORT},addr=0.0.0.0,disable-ticketing=on")
       DISPLAY_ARGS+=(-device virtio-serial-pci)
       ;;
-    *)
-      ;;
   esac
+}
+
+# Background: poll guest until SSH/RDP answers, then log ready.
+wait_guest_ready() {
+  local deadline=$((SECONDS + READY_TIMEOUT))
+  local port=22 probe="10.0.2.15"
+  is_windows_os "$VM_OS" && port=3389
+  info "Waiting for guest ready (tcp ${probe}:${port}, timeout ${READY_TIMEOUT}s)…"
+  while (( SECONDS < deadline )); do
+    if timeout 1 bash -c "echo >/dev/tcp/${probe}/${port}" 2>/dev/null; then
+      log "Guest READY — ${probe}:${port} open"
+      [[ -n "$SERVER_IP" ]] && log "Public: ${SERVER_IP}:${port}"
+      return 0
+    fi
+    # ICMP as soft signal
+    ping -c1 -W1 "$probe" >/dev/null 2>&1 || true
+    sleep 3
+  done
+  err "Guest not ready after ${READY_TIMEOUT}s (still booting?). Check ${SERVER_IP:-IP}:${port}"
+  return 0
 }
 
 boot_vm() {
   info "Booting ${VM_OS}"
-  local mem="${SERVER_MEMORY}"
-  local smp hostfwd lip mode SERIAL_ARG
-  # Wings sets the container cgroup Memory == SERVER_MEMORY. QEMU guest RAM
-  # must leave headroom for the emulator or the cgroup OOM-kills us (exit 137).
-  local overhead=768
-  if [[ "$mem" =~ ^[0-9]+$ ]] && [[ "$mem" -gt $((overhead + 512)) ]]; then
-    mem=$((mem - overhead))
-    info "Guest RAM ${mem}M (SERVER_MEMORY=${SERVER_MEMORY}M − ${overhead}M QEMU headroom)"
+  local mem smp hostfwd lip mode SERIAL_ARG
+  mem="$(qemu_memory_mib)"
+  if [[ "$mem" != "$SERVER_MEMORY" ]]; then
+    info "Guest RAM ${mem}M (SERVER_MEMORY=${SERVER_MEMORY}M, QEMU headroom reserved)"
   fi
   smp=$(smp_count)
   hostfwd=$(build_hostfwd)
@@ -572,8 +613,6 @@ boot_vm() {
   apply_display_args
   announce_display
 
-  # Always use file-backed serial under Wings. A PTY/stdio attach makes QEMU
-  # exit when the console pipe closes → Wings crash-loop.
   : >"${SERIAL_LOG}"
   SERIAL_ARG="file:${SERIAL_LOG}"
   if [[ "${CONSOLE_STDIO:-0}" == "1" && -t 1 ]]; then
@@ -601,9 +640,7 @@ boot_vm() {
 
   if is_windows_os "$VM_OS"; then
     args+=(-drive "file=${DISK_FILE},format=qcow2")
-    if [[ -f "$SEED_ISO" ]]; then
-      args+=(-drive "file=${SEED_ISO},media=cdrom,readonly=on")
-    fi
+    [[ -f "$SEED_ISO" ]] && args+=(-drive "file=${SEED_ISO},media=cdrom,readonly=on")
   else
     args+=(
       -drive "file=${DISK_FILE},format=qcow2,if=virtio,cache=writeback,discard=unmap"
@@ -628,14 +665,23 @@ boot_vm() {
     echo "server_ip=${SERVER_IP}"
     echo "disk_gb=${OS_DISKSIZE}"
     echo "display_mode=${mode}"
+    echo "guest_ram_mib=${mem}"
     echo "vnc_port=${VNC_PORT}"
     echo "novnc_port=${NOVNC_PORT}"
     echo "spice_port=${SPICE_PORT}"
   } >"$STATE_FILE"
 
   info "Lancement de 1vps-vm ${VERSION}"
-  log "Panel Console = serial ttyS0 (login after cloud-init)"
-  exec qemu-system-x86_64 "${args[@]}"
+  # Do not exec: wait for guest ready in parallel, then wait on QEMU.
+  qemu-system-x86_64 "${args[@]}" &
+  local qpid=$!
+  wait_guest_ready &
+  local wpid=$!
+  wait "$qpid"
+  local rc=$?
+  kill "$wpid" 2>/dev/null || true
+  wait "$wpid" 2>/dev/null || true
+  exit "$rc"
 }
 
 main() {

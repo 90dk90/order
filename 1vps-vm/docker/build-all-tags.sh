@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Build local 1vps-* tags (ENTRYPOINT → host-mounted agent).
+# Build (and optionally push) all 1vps-* docker tags.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 BASE="${BASE:-ghcr.io/david1117dev/lumenvm:ubuntu-24}"
 PREFIX="${PREFIX:-ghcr.io/david1117dev/lumenvm:1vps-}"
+PUSH="${PUSH:-0}"
 
 OS_LIST=(
   debian-10 debian-11 debian-12 debian-13
@@ -17,6 +18,10 @@ for os in "${OS_LIST[@]}"; do
   echo "BUILD ${PREFIX}${os} (VM_OS=${os})"
   docker build --build-arg "BASE=${BASE}" --build-arg "VM_OS=${os}" \
     -t "${PREFIX}${os}" -f "${ROOT}/Dockerfile" "${ROOT}"
+  if [[ "$PUSH" == "1" ]]; then
+    echo "PUSH ${PREFIX}${os}"
+    docker push "${PREFIX}${os}"
+  fi
 done
 echo DONE
 docker images --format '{{.Repository}}:{{.Tag}}' | grep ':1vps-' | sort
