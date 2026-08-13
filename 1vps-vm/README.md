@@ -38,7 +38,7 @@ LICENSE='…' ./scripts/sync-lumen-desktops-to-s3.sh   # admin seed only
 | `OS_DISKSIZE` | Auto from `{{server.build.disk}}` (MiB → GiB), hidden |
 | `PACKAGE_UPDATE` | Hidden, always `0` (images stay warm; client can `apt update`) |
 | `DISPLAY_MODE` | see above |
-| `ADDITIONAL_PORTS` | Extra guest TCP/UDP forwards |
+| `ADDITIONAL_PORTS` | Hidden — firewall / IP allocations handle ports |
 | `UEFI` | Client toggle: OVMF when `1`, SeaBIOS default `0` (can break older images) |
 
 ## Layout
