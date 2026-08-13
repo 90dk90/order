@@ -4,10 +4,10 @@
 #   - /usr/bin/qemu-system-x86_64 wrapper → TAP + virtio-net + DHCP 10.0.2.15
 #   - lumen-autoballoon (QMP) for RAM reclaim
 #   - lumen-dedicated-ip-forward for public IP → container DNAT/SNAT
-# No api.lumenvm.cloud — official mirrors / local cache only.
+# Linux images: public Hetzner S3. Windows: host cache / Lumen LICENSE (private).
 set -euo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 HOME_DIR="${HOME_DIR:-/home/container}"
 CACHE_DIR="${CACHE_DIR:-/opt/1vps/lumenvm-net/vm-images}"
 WORKDIR="${HOME_DIR}"
@@ -46,6 +46,7 @@ UEFI="${UEFI:-0}"
 PACKAGE_UPDATE="${PACKAGE_UPDATE:-0}"
 P_SERVER_UUID="${P_SERVER_UUID:-unknown}"
 FORCE_PROVISION="${FORCE_PROVISION:-0}"
+LICENSE="${LICENSE:-}"
 
 DISK_FILE="${WORKDIR}/${VM_OS}.qcow2"
 SEED_ISO="${WORKDIR}/.1vps-seed.iso"
@@ -53,15 +54,23 @@ CIDATA_DIR="${WORKDIR}/.1vps-cidata"
 STATE_FILE="${WORKDIR}/.1vps-vm-state"
 SERIAL_LOG="${WORKDIR}/serial.log"
 
-# Hetzner Object Storage (fsn1) — public-read objects in bucket 1vps-vm-images
+# Hetzner Object Storage (fsn1) — public-read Linux objects in bucket 1vps-vm-images
 VM_IMAGE_BASE="${VM_IMAGE_BASE:-https://fsn1.your-objectstorage.com/1vps-vm-images}"
 
-# Keys must match objects uploaded by scripts/sync-images-to-s3.sh
-SUPPORTED_OS=(
+SUPPORTED_LINUX=(
   debian-10 debian-11 debian-12 debian-13
   ubuntu-18 ubuntu-20 ubuntu-22 ubuntu-24
   fedora-40 rockylinux almalinux alpine archlinux
 )
+
+# Pre-activated Lumen Windows images — host cache or LICENSE download only (never public S3).
+SUPPORTED_WINDOWS=(
+  windows-2022-desktop windows-10-desktop windows-7-desktop
+)
+
+is_windows_os() {
+  [[ "$1" == windows-* ]]
+}
 
 image_url_for() {
   local os="$1"
@@ -77,10 +86,55 @@ is_valid_qcow() {
   qemu-img info "$f" >/dev/null 2>&1
 }
 
+fetch_windows_from_lumen() {
+  local os="$1" cache="$2"
+  local gz="${cache}.gz" tmp="${cache}.partial"
+  [[ -n "$LICENSE" && "$LICENSE" != "PASTE-YOUR-LICENSE-HERE" ]] || {
+    err "Windows image missing from cache and LICENSE unset"
+    err "Warm cache: LICENSE=… ./scripts/fetch-windows-from-lumen.sh ${os}"
+    exit 1
+  }
+  info "Downloading pre-activated ${os} via Lumen API (private)"
+  rm -f "$gz" "$tmp"
+  wget --user-agent=lumenvm-api-agent \
+    --header="License: ${LICENSE}" \
+    --header="Product: 1" \
+    --header="File: ${os}" \
+    -O "$gz" \
+    "https://api.lumenvm.cloud/content"
+  gzip -dc "$gz" > "$tmp"
+  rm -f "$gz"
+  if ! is_valid_qcow "$tmp"; then
+    err "Windows download is not a valid qcow2"
+    rm -f "$tmp"
+    exit 1
+  fi
+  mv -f "$tmp" "$cache"
+}
+
 fetch_image() {
   local os="$1" dest="$2"
   local url cache tmp known=0 x
-  for x in "${SUPPORTED_OS[@]}"; do
+  mkdir -p "$CACHE_DIR"
+  cache="${CACHE_DIR}/${os}.qcow2"
+
+  if is_windows_os "$os"; then
+    for x in "${SUPPORTED_WINDOWS[@]}"; do
+      [[ "$x" == "$os" ]] && known=1 && break
+    done
+    [[ "$known" -eq 1 ]] || { err "Unsupported Windows OS=${os}"; exit 1; }
+    if is_valid_qcow "$cache"; then
+      log "Using cached Windows image ${cache}"
+      cp -f "$cache" "$dest"
+      return 0
+    fi
+    fetch_windows_from_lumen "$os" "$cache"
+    cp -f "$cache" "$dest"
+    log "Windows image ready ($(du -h "$dest" | awk '{print $1}'))"
+    return 0
+  fi
+
+  for x in "${SUPPORTED_LINUX[@]}"; do
     [[ "$x" == "$os" ]] && known=1 && break
   done
   if [[ "$known" -ne 1 ]]; then
@@ -89,8 +143,6 @@ fetch_image() {
   fi
 
   url="$(image_url_for "$os")"
-  cache="${CACHE_DIR}/${os}.qcow2"
-  mkdir -p "$CACHE_DIR"
 
   if is_valid_qcow "$cache"; then
     log "Using cached image ${cache}"
@@ -210,13 +262,18 @@ EOF
 parse_ports() {
   local raw="${1// /}"
   IFS=',' read -ra parts <<<"$raw"
-  local out=() p has22=0
+  local out=() p has22=0 has3389=0
   for p in "${parts[@]}"; do
     [[ "$p" =~ ^[0-9]+$ ]] || continue
     out+=("$p")
     [[ "$p" == "22" ]] && has22=1
+    [[ "$p" == "3389" ]] && has3389=1
   done
-  [[ "$has22" -eq 1 ]] || out+=(22)
+  if is_windows_os "$VM_OS"; then
+    [[ "$has3389" -eq 1 ]] || out+=(3389)
+  else
+    [[ "$has22" -eq 1 ]] || out+=(22)
+  fi
   printf '%s\n' "${out[@]}" | awk 'NF && !a[$0]++'
 }
 
@@ -256,6 +313,7 @@ boot_vm() {
   #  2) install DNAT for forwarded ports
   #  3) start lumen-dhcp (10.0.2.15)
   #  4) add virtio-balloon + QMP for lumen-autoballoon
+  #  5) for Windows filenames: attach balloon-setup.iso (VirtIO balloon drivers)
   local args=(
     -name "1vps-${P_SERVER_UUID}"
     -m "${mem}M"
@@ -265,14 +323,22 @@ boot_vm() {
     -display none
     -serial "file:${SERIAL_LOG}"
     -usb -device usb-tablet
-    -drive "file=${DISK_FILE},format=qcow2,if=virtio,cache=writeback,discard=unmap"
-    -drive "file=${SEED_ISO},media=cdrom,readonly=on"
     -smbios "type=1,manufacturer=1VPS,product=1vps-vm,version=${VERSION},serial=${P_SERVER_UUID}"
     -virtfs "local,path=${WORKDIR}/shared,mount_tag=shared,security_model=none"
     -netdev "user,id=net0${hostfwd}"
     -device "virtio-net-pci,netdev=net0"
     -device "virtio-balloon"
   )
+
+  if is_windows_os "$VM_OS"; then
+    # Match Lumen: IDE disk (preactivated image expects this); wrapper adds balloon ISO.
+    args+=(-drive "file=${DISK_FILE},format=qcow2")
+  else
+    args+=(
+      -drive "file=${DISK_FILE},format=qcow2,if=virtio,cache=writeback,discard=unmap"
+      -drive "file=${SEED_ISO},media=cdrom,readonly=on"
+    )
+  fi
 
   if [[ "$UEFI" == "1" ]]; then
     local ovmf
@@ -331,8 +397,9 @@ main() {
 
   resize_disk "$DISK_FILE" "$OS_DISKSIZE"
 
-  # Always refresh seed on first boot; also if missing.
-  if [[ "$first_boot" -eq 1 || ! -f "$SEED_ISO" ]]; then
+  if is_windows_os "$VM_OS"; then
+    info "Windows: skip cloud-init (pre-activated image). Balloon via host wrapper + balloon-setup.iso."
+  elif [[ "$first_boot" -eq 1 || ! -f "$SEED_ISO" ]]; then
     info "Provisioning."
     write_cidata
   fi

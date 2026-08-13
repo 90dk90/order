@@ -6,21 +6,31 @@ Self-hosted KVM agent replacing LumenVM for Digi / 1VPS.
 
 Bucket: `1vps-vm-images` @ `https://fsn1.your-objectstorage.com`
 
-Objects are **public-read**:
+**Linux** objects are **public-read**:
 `https://fsn1.your-objectstorage.com/1vps-vm-images/<os>.qcow2`
 
 Override base URL with env `VM_IMAGE_BASE`.
 
+**Windows** (Lumen pre-activated) is **not** public. Warm the host cache with your Lumen `LICENSE`:
+
+```bash
+LICENSE='…' ./scripts/fetch-windows-from-lumen.sh windows-2022-desktop
+# → /opt/1vps/lumenvm-net/vm-images/windows-2022-desktop.qcow2
+```
+
+Ballooning for Windows: host QEMU wrapper injects `virtio-balloon` + attaches `virtio/balloon-setup.iso` when the disk path contains `windows`.
+
 Sync (prefer **dash** — better egress than Wings; needs `rclone` remote `hetzner` + optional `aria2`):
 
 ```bash
-# Fast path: parallel aria2 downloads + rclone multipart uploads
+# Fast path: parallel aria2 downloads + rclone multipart uploads (Linux only)
 ./scripts/sync-images-to-s3.sh
 # Live copy on dash:
 /usr/local/sbin/sync-images-fast.sh
 ```
 
 Public objects: ~12 OS images (Debian 10–13, Ubuntu 18–24, Rocky, Alma, Alpine, Arch, Fedora 40).
+Windows stays on host cache / private objects.
 
 Warm local cache from S3:
 
