@@ -11,14 +11,15 @@ Bucket: `1vps-vm-images` @ `https://fsn1.your-objectstorage.com`
 
 Override base URL with env `VM_IMAGE_BASE`.
 
-**Windows** (Lumen pre-activated) is **not** public. Warm the host cache with your Lumen `LICENSE`:
+**Windows / Redstar / Linux desktops** come from Lumen (`LICENSE` + `/content`). Linux desktops are public-read on S3; Windows/Redstar are **private**.
 
 ```bash
+LICENSE='…' ./scripts/sync-lumen-desktops-to-s3.sh
+# or single Windows:
 LICENSE='…' ./scripts/fetch-windows-from-lumen.sh windows-2022-desktop
-# → /opt/1vps/lumenvm-net/vm-images/windows-2022-desktop.qcow2
 ```
 
-Ballooning for Windows: host QEMU wrapper injects `virtio-balloon` + attaches `virtio/balloon-setup.iso` when the disk path contains `windows`.
+Ballooning for Windows: host QEMU wrapper injects `virtio-balloon` + attaches `virtio/balloon-setup.iso` when the disk path contains `windows` (or use IDE disk name with `windows`).
 
 Sync (prefer **dash** — better egress than Wings; needs `rclone` remote `hetzner` + optional `aria2`):
 

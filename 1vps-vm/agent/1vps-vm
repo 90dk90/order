@@ -61,15 +61,24 @@ SUPPORTED_LINUX=(
   debian-10 debian-11 debian-12 debian-13
   ubuntu-18 ubuntu-20 ubuntu-22 ubuntu-24
   fedora-40 rockylinux almalinux alpine archlinux
+  kali-desktop debian-12-desktop ubuntu-24-desktop
 )
 
-# Pre-activated Lumen Windows images — host cache or LICENSE download only (never public S3).
+# Pre-activated Lumen images — host cache or LICENSE download (Windows/Redstar never public).
 SUPPORTED_WINDOWS=(
-  windows-2022-desktop windows-10-desktop windows-7-desktop
+  windows-2022-desktop windows-10-desktop windows-7-desktop redstar-desktop
 )
 
 is_windows_os() {
-  [[ "$1" == windows-* ]]
+  case "$1" in
+    windows-*|redstar-desktop) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_lumen_private_os() {
+  # Images that must not be fetched from public S3 URLs
+  is_windows_os "$1"
 }
 
 image_url_for() {
