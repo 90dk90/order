@@ -34,7 +34,7 @@ const RANGES: { key: RangeKey; label: string; seconds: number }[] = [
 
 function formatMbps(bps: number): string {
     if (!Number.isFinite(bps) || bps <= 0) return '0 Mbps';
-    const mbps = bps / 1_000_000;
+    const mbps = bps / 1000000;
     if (mbps < 0.01) return `${(bps / 1000).toFixed(1)} Kbps`;
     if (mbps < 10) return `${mbps.toFixed(2)} Mbps`;
     if (mbps < 1000) return `${mbps.toFixed(1)} Mbps`;
@@ -136,7 +136,7 @@ export default ({ row, prefixLabel }: Props) => {
             datasets: [
                 {
                     label: 'Trafic entrant (Mbps)',
-                    data: filteredHistory.map((h) => Number(((h.rx_bps || 0) / 1_000_000).toFixed(3))),
+                    data: filteredHistory.map((h) => Number(((h.rx_bps || 0) / 1000000).toFixed(3))),
                     borderColor: '#10b981',
                     backgroundColor: 'rgba(16, 185, 129, 0.12)',
                     fill: true,
@@ -146,7 +146,7 @@ export default ({ row, prefixLabel }: Props) => {
                 },
                 {
                     label: 'Trafic sortant (Mbps)',
-                    data: filteredHistory.map((h) => Number(((h.tx_bps || 0) / 1_000_000).toFixed(3))),
+                    data: filteredHistory.map((h) => Number(((h.tx_bps || 0) / 1000000).toFixed(3))),
                     borderColor: '#34d399',
                     backgroundColor: 'rgba(52, 211, 153, 0.08)',
                     fill: true,

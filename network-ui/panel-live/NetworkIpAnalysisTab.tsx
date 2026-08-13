@@ -95,7 +95,7 @@ const formatRate = (bps: number) => {
 
 const formatPps = (n: number) => {
     if (!Number.isFinite(n) || n <= 0) return '0 pps';
-    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)} Mpps`;
+    if (n >= 1000000) return `${(n / 1000000).toFixed(2)} Mpps`;
     if (n >= 1000) return `${(n / 1000).toFixed(1)} Kpps`;
     return `${Math.round(n)} pps`;
 };
@@ -268,7 +268,7 @@ export default ({ row, prefixLabel }: Props) => {
             datasets: [
                 {
                     label: 'Entrant',
-                    data: filteredHistory.map((h) => Number(((h.rx_bps || 0) / 1_000_000).toFixed(3))),
+                    data: filteredHistory.map((h) => Number(((h.rx_bps || 0) / 1000000).toFixed(3))),
                     borderColor: '#10b981',
                     backgroundColor: 'rgba(16, 185, 129, 0.12)',
                     fill: true,
@@ -278,7 +278,7 @@ export default ({ row, prefixLabel }: Props) => {
                 },
                 {
                     label: 'Sortant',
-                    data: filteredHistory.map((h) => Number(((h.tx_bps || 0) / 1_000_000).toFixed(3))),
+                    data: filteredHistory.map((h) => Number(((h.tx_bps || 0) / 1000000).toFixed(3))),
                     borderColor: '#34d399',
                     backgroundColor: 'rgba(52, 211, 153, 0.08)',
                     fill: true,
