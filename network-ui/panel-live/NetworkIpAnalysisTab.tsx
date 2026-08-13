@@ -496,7 +496,7 @@ export default ({ row, prefixLabel }: Props) => {
                         ? `Dernier échantillon : ${new Date((lastSample.t || 0) * 1000).toLocaleString('fr-FR')}`
                         : fetchedAt
                           ? `Mis à jour ${new Date(fetchedAt).toLocaleTimeString('fr-FR')}`
-                          : 'Période d’analyse filtrée côté client (l’API Digi n’accepte pas de plage).'}
+                          : 'Période d’analyse filtrée côté client (plage appliquée sur l’historique disponible).'}
                 </MetaLine>
             </Panel>
 
@@ -532,7 +532,7 @@ export default ({ row, prefixLabel }: Props) => {
                     <EmptyState
                         icon={<FontAwesomeIcon icon={faGlobe} />}
                         title='Aucune répartition pays disponible'
-                        description='L’API Digi n’expose pas de géolocalisation du trafic. Ports, pairs IP et protocoles restent disponibles.'
+                        description='La géolocalisation du trafic n’est pas disponible. Ports, pairs IP et protocoles restent disponibles.'
                     />
                 ) : loading && !traffic ? (
                     <div css={tw`flex h-40 items-center justify-center text-sm`} style={{ color: CloudUI.textMuted }}>
@@ -588,7 +588,7 @@ export default ({ row, prefixLabel }: Props) => {
 
                 {kind !== 'countries' && kind !== 'protocols' ? (
                     <MetaLine css={tw`mt-4`}>
-                        Les compteurs de règles firewall Digi ne distinguent pas le sens : ports et pairs sont globaux.
+                        Les compteurs de règles firewall ne distinguent pas le sens : ports et pairs sont globaux.
                         Le filtre Entrant / Sortant s’applique aux protocoles et aux graphiques.
                     </MetaLine>
                 ) : null}

@@ -403,7 +403,7 @@ export default () => {
                 <Metric
                     label="Anti-DDoS"
                     value={alwaysOn ? 'Always-on' : 'Dynamic'}
-                    hint="Mitigation Digi"
+                    hint="Protection anti-DDoS"
                     tone={alwaysOn ? 'warn' : 'ok'}
                 />
                 <Metric

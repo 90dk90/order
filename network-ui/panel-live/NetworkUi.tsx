@@ -199,7 +199,7 @@ const digiOutlineHover: React.CSSProperties = {
     border: '1px solid rgba(16,185,129,0.35)',
 };
 
-/** Bouton outline Digi (Modifier PTR, Gérer, etc.) — hover emerald signature. */
+/** Bouton outline (Modifier PTR, Gérer, etc.) — hover emerald signature. */
 export const GhostButton = ({
     children,
     onClick,
@@ -237,7 +237,7 @@ export const GhostButton = ({
     );
 };
 
-/** Lien outline Digi — même langage que GhostButton (ex. Gérer ce préfixe). */
+/** Lien outline — même langage que GhostButton (ex. Gérer ce préfixe). */
 export const GhostLink = ({
     to,
     children,

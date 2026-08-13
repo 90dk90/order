@@ -368,7 +368,7 @@ export default () => {
                 <NetworkHeader
                     icon={Icon.Shield}
                     title="Attaques DDoS"
-                    subtitle="Mitigation Packets Decreaser, modes de filtre et historique d’incidents."
+                    subtitle="Mitigation anti-DDoS, modes de filtre et historique d’incidents."
                 />
                 {overview.active > 0 ? (
                     <div
