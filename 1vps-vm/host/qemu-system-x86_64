@@ -57,16 +57,23 @@ finish_qemu() {
     rm -f "$ROOT/qmp/${HN}.sock"
     out+=("-qmp" "unix:${ROOT}/qmp/${HN}.sock,server=on,wait=off")
   fi
-  # Windows: balloon helper + VirtIO drivers ISO (rescue/extra via agent EXTRA_ISO).
+  # Windows: attach at most one extra host ISO (IDE CDROM slots are limited:
+  # seed/cidata already uses one). Prefer virtio-win drivers over balloon-setup.
+  has_drive_file() {
+    local needle="$1" a
+    for a in "${out[@]}"; do
+      [[ "$a" == *"$needle"* ]] && return 0
+    done
+    return 1
+  }
   if [[ "$is_windows" -eq 1 ]]; then
-    if [[ -f "$ROOT/virtio/balloon-setup.iso" ]]; then
+    if [[ -f "$ROOT/virtio/virtio-win.iso" ]] && ! has_drive_file "virtio-win.iso"; then
+      out+=("-drive" "file=${ROOT}/virtio/virtio-win.iso,media=cdrom,readonly=on")
+    elif [[ -f "$ROOT/virtio/balloon-setup.iso" ]] && ! has_drive_file "balloon-setup.iso"; then
       out+=("-drive" "file=${ROOT}/virtio/balloon-setup.iso,media=cdrom,readonly=on")
     fi
-    if [[ -f "$ROOT/virtio/virtio-win.iso" ]]; then
-      out+=("-drive" "file=${ROOT}/virtio/virtio-win.iso,media=cdrom,readonly=on")
-    fi
   fi
-  if [[ -n "${RESCUE_ISO:-}" && -f "${RESCUE_ISO}" ]]; then
+  if [[ -n "${RESCUE_ISO:-}" && -f "${RESCUE_ISO}" ]] && ! has_drive_file "$RESCUE_ISO"; then
     out+=("-drive" "file=${RESCUE_ISO},media=cdrom,readonly=on")
   fi
   local L; L=$(prepare_datadir)

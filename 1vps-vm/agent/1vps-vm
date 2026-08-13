@@ -7,7 +7,7 @@
 # Images: Hetzner S3 only (public HTTP or private rclone). No Lumen API.
 set -euo pipefail
 
-VERSION="0.8.0"
+VERSION="0.8.1"
 HOME_DIR="${HOME_DIR:-/home/container}"
 CACHE_DIR="${CACHE_DIR:-/opt/1vps/lumenvm-net/vm-images}"
 VIRTIO_DIR="${VIRTIO_DIR:-/opt/1vps/lumenvm-net/virtio}"
@@ -190,10 +190,11 @@ qemu_maxmem_mib() {
 }
 
 should_attach_virtio_iso() {
+  # Default off: host qemu-system-x86_64 wrapper already injects virtio-win + balloon-setup
+  # for Windows. Enabling here would exceed IDE CDROM slots and crash QEMU.
   case "${ATTACH_VIRTIO_ISO,,}" in
     1|true|yes|on) return 0 ;;
-    0|false|no|off) return 1 ;;
-    auto|*) is_windows_os "$VM_OS" ;;
+    0|false|no|off|auto|*) return 1 ;;
   esac
 }
 
@@ -219,7 +220,8 @@ is_valid_qcow() {
   [[ -f "$f" ]] || return 1
   local sz
   sz="$(stat -c%s "$f" 2>/dev/null || echo 0)"
-  [[ "$sz" -gt 1048576 ]] || return 1
+  # Fresh qcow2 overlays (backing-file provision) can be << 1 MiB — still valid.
+  [[ "$sz" -gt 256 ]] || return 1
   qemu-img info "$f" >/dev/null 2>&1
 }
 
