@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# Hot-adjust guest RAM for a running 1vps-vm / LumenVM via QMP.
+# Usage: 1vps-hot-ram <server-uuid> <target-mib>
+set -euo pipefail
+
+ROOT="${ROOT:-/opt/1vps/lumenvm-net}"
+QMPDIR="${QMPDIR:-$ROOT/qmp}"
+STATEDIR="${STATEDIR:-/var/lib/1vps-hot-ram}"
+LOG="${LOG:-/var/log/1vps-hot-ram.log}"
+
+uuid="${1:-}"
+target_mib="${2:-}"
+
+log() {
+  local line="[$(date -Is)] $*"
+  echo "$line" | tee -a "$LOG" >/dev/null
+  echo "$line"
+}
+
+die() { log "ERROR: $*"; exit 1; }
+
+[[ -n "$uuid" && "$target_mib" =~ ^[0-9]+$ ]] || die "usage: $0 <uuid> <target-mib>"
+
+sock="${QMPDIR}/${uuid}.sock"
+[[ -S "$sock" ]] || die "qmp socket missing: $sock (is the VM running?)"
+
+mkdir -p "$STATEDIR/$uuid"
+
+qmp_json() {
+  local cmd_json="$1"
+  QMP_SOCK="$sock" QMP_CMD="$cmd_json" python3 - <<'PY'
+import json, os, socket, sys
+
+path = os.environ["QMP_SOCK"]
+cmd = json.loads(os.environ["QMP_CMD"])
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(8)
+s.connect(path)
+
+def read_msg():
+    buf = b""
+    while True:
+        chunk = s.recv(65536)
+        if not chunk:
+            raise ConnectionError("qmp closed")
+        buf += chunk
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            line = line.strip()
+            if not line:
+                continue
+            msg = json.loads(line.decode())
+            if "event" in msg:
+                continue
+            return msg
+
+read_msg()  # banner
+s.sendall((json.dumps({"execute": "qmp_capabilities"}) + "\n").encode())
+read_msg()
+s.sendall((json.dumps(cmd) + "\n").encode())
+print(json.dumps(read_msg()))
+s.close()
+PY
+}
+
+bytes_of_mib() { echo $(( $1 * 1024 * 1024 )); }
+
+bal="$(qmp_json '{"execute":"query-balloon"}')"
+actual_bytes="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]);
+print(int(d["return"]["actual"]) if "return" in d else 0)' "$bal")"
+[[ "$actual_bytes" -gt 0 ]] || die "query-balloon failed: $bal"
+actual_mib=$(( actual_bytes / 1024 / 1024 ))
+target_bytes="$(bytes_of_mib "$target_mib")"
+
+echo "$target_mib" >"$STATEDIR/$uuid/target_mib"
+
+if (( target_mib == actual_mib )); then
+  log "$uuid: already at ${actual_mib}MiB"
+  exit 0
+fi
+
+if (( target_mib < actual_mib )); then
+  log "$uuid: balloon down ${actual_mib} -> ${target_mib} MiB"
+  res="$(qmp_json "{\"execute\":\"balloon\",\"arguments\":{\"value\":${target_bytes}}}")"
+  echo "$res" | grep -q '"return"' || die "balloon failed: $res"
+  if [[ -d /var/lib/lumen-autoballoon ]]; then
+    mkdir -p "/var/lib/lumen-autoballoon/$uuid"
+    echo "$target_bytes" >"/var/lib/lumen-autoballoon/$uuid/target"
+    echo "$(date +%s)" >"/var/lib/lumen-autoballoon/$uuid/target_ts"
+  fi
+  log "$uuid: balloon requested"
+  exit 0
+fi
+
+# Increase: balloon deflate toward target (works up to the original -m size).
+# pc-dimm hotplug is only used when balloon is rejected AND maxmem/slots exist.
+log "$uuid: balloon up ${actual_mib} -> ${target_mib} MiB"
+res="$(qmp_json "{\"execute\":\"balloon\",\"arguments\":{\"value\":${target_bytes}}}")"
+if echo "$res" | grep -q '"return"'; then
+  if [[ -d /var/lib/lumen-autoballoon ]]; then
+    mkdir -p "/var/lib/lumen-autoballoon/$uuid"
+    echo "$target_bytes" >"/var/lib/lumen-autoballoon/$uuid/target"
+    echo "$(date +%s)" >"/var/lib/lumen-autoballoon/$uuid/target_ts"
+  fi
+  log "$uuid: balloon up requested (guest may take a few seconds to reach target)"
+  exit 0
+fi
+
+log "$uuid: balloon up rejected ($res) — trying pc-dimm hotplug"
+delta_mib=$(( target_mib - actual_mib ))
+chunk=128
+(( delta_mib < chunk )) && chunk="$delta_mib"
+remain="$delta_mib"
+slot_file="$STATEDIR/$uuid/next_slot"
+slot="$(cat "$slot_file" 2>/dev/null || echo 0)"
+[[ "$slot" =~ ^[0-9]+$ ]] || slot=0
+
+log "$uuid: hotplug +${delta_mib}MiB (now ${actual_mib}MiB → want ${target_mib}MiB)"
+
+while (( remain > 0 )); do
+  add="$chunk"
+  (( remain < add )) && add="$remain"
+  add_bytes="$(bytes_of_mib "$add")"
+  mem_id="hotmem${slot}"
+  dimm_id="hotdimm${slot}"
+  res="$(qmp_json "{\"execute\":\"object-add\",\"arguments\":{\"qom-type\":\"memory-backend-ram\",\"id\":\"${mem_id}\",\"size\":${add_bytes}}}")"
+  if ! echo "$res" | grep -q '"return"'; then
+    die "object-add failed (need maxmem/slots at boot?): $res"
+  fi
+  res="$(qmp_json "{\"execute\":\"device_add\",\"arguments\":{\"driver\":\"pc-dimm\",\"id\":\"${dimm_id}\",\"memdev\":\"${mem_id}\"}}")"
+  if ! echo "$res" | grep -q '"return"'; then
+    qmp_json "{\"execute\":\"object-del\",\"arguments\":{\"id\":\"${mem_id}\"}}" >/dev/null 2>&1 || true
+    die "device_add pc-dimm failed: $res"
+  fi
+  log "$uuid: plugged ${add}MiB as ${dimm_id}"
+  remain=$((remain - add))
+  slot=$((slot + 1))
+  echo "$slot" >"$slot_file"
+done
+
+if [[ -d /var/lib/lumen-autoballoon ]]; then
+  mkdir -p "/var/lib/lumen-autoballoon/$uuid"
+  echo "$target_bytes" >"/var/lib/lumen-autoballoon/$uuid/max"
+fi
+
+log "$uuid: hotplug done → ${target_mib}MiB"
+exit 0

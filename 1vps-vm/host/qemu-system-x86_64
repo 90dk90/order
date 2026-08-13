@@ -57,8 +57,17 @@ finish_qemu() {
     rm -f "$ROOT/qmp/${HN}.sock"
     out+=("-qmp" "unix:${ROOT}/qmp/${HN}.sock,server=on,wait=off")
   fi
-  if [[ "$is_windows" -eq 1 && -f "$ROOT/virtio/balloon-setup.iso" ]]; then
-    out+=("-drive" "file=${ROOT}/virtio/balloon-setup.iso,media=cdrom,readonly=on")
+  # Windows: balloon helper + VirtIO drivers ISO (rescue/extra via agent EXTRA_ISO).
+  if [[ "$is_windows" -eq 1 ]]; then
+    if [[ -f "$ROOT/virtio/balloon-setup.iso" ]]; then
+      out+=("-drive" "file=${ROOT}/virtio/balloon-setup.iso,media=cdrom,readonly=on")
+    fi
+    if [[ -f "$ROOT/virtio/virtio-win.iso" ]]; then
+      out+=("-drive" "file=${ROOT}/virtio/virtio-win.iso,media=cdrom,readonly=on")
+    fi
+  fi
+  if [[ -n "${RESCUE_ISO:-}" && -f "${RESCUE_ISO}" ]]; then
+    out+=("-drive" "file=${RESCUE_ISO},media=cdrom,readonly=on")
   fi
   local L; L=$(prepare_datadir)
   exec "$REAL" -L "$L" "${out[@]}"

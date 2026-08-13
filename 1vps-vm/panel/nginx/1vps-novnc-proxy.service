@@ -1,0 +1,15 @@
+[Unit]
+Description=1VPS noVNC HTTPS proxy (dash → node:6080)
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/1vps-novnc-proxy
+ExecStart=/usr/bin/python3 /usr/local/sbin/1vps-novnc-proxy
+Restart=on-failure
+RestartSec=2
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target

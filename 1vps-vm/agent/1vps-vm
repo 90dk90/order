@@ -7,9 +7,10 @@
 # Images: Hetzner S3 only (public HTTP or private rclone). No Lumen API.
 set -euo pipefail
 
-VERSION="0.7.2"
+VERSION="0.8.0"
 HOME_DIR="${HOME_DIR:-/home/container}"
 CACHE_DIR="${CACHE_DIR:-/opt/1vps/lumenvm-net/vm-images}"
+VIRTIO_DIR="${VIRTIO_DIR:-/opt/1vps/lumenvm-net/virtio}"
 WORKDIR="${HOME_DIR}"
 cd "$WORKDIR"
 
@@ -57,6 +58,15 @@ P_SERVER_UUID="${P_SERVER_UUID:-unknown}"
 FORCE_PROVISION="${FORCE_PROVISION:-0}"
 READY_TIMEOUT="${READY_TIMEOUT:-180}"
 QEMU_MEM_OVERHEAD="${QEMU_MEM_OVERHEAD:-}"
+# Hot-plug ceiling (MiB). Guest boots at qemu_memory_mib(); panel can grow up to this via QMP.
+QEMU_MAXMEM_MIB="${QEMU_MAXMEM_MIB:-131072}"
+QEMU_MEM_SLOTS="${QEMU_MEM_SLOTS:-16}"
+# Optional host-path ISOs (mounted read-only into the container by Wings/bind or host wrapper).
+VIRTIO_WIN_ISO="${VIRTIO_WIN_ISO:-${VIRTIO_DIR}/virtio-win.iso}"
+BALLOON_SETUP_ISO="${BALLOON_SETUP_ISO:-${VIRTIO_DIR}/balloon-setup.iso}"
+RESCUE_ISO="${RESCUE_ISO:-}"
+EXTRA_ISO="${EXTRA_ISO:-}"
+ATTACH_VIRTIO_ISO="${ATTACH_VIRTIO_ISO:-auto}"
 
 DISK_FILE="${WORKDIR}/${VM_OS}.qcow2"
 SEED_ISO="${WORKDIR}/.1vps-seed.iso"
@@ -143,6 +153,7 @@ normalize_disksize() {
 # Scale QEMU headroom with plan size (Wings cgroup == SERVER_MEMORY).
 qemu_memory_mib() {
   local mem="${SERVER_MEMORY}" overhead
+  mem="${mem%%.*}"
   if [[ -n "$QEMU_MEM_OVERHEAD" && "$QEMU_MEM_OVERHEAD" =~ ^[0-9]+$ ]]; then
     overhead="$QEMU_MEM_OVERHEAD"
   elif [[ "$mem" -le 2048 ]]; then
@@ -159,6 +170,48 @@ qemu_memory_mib() {
   else
     echo "$mem"
   fi
+}
+
+# Hot-plug ceiling: at least current guest RAM, never below SERVER_MEMORY.
+qemu_maxmem_mib() {
+  local mem max want
+  mem="$(qemu_memory_mib)"
+  max="${QEMU_MAXMEM_MIB%%.*}"
+  [[ "$max" =~ ^[0-9]+$ ]] || max=131072
+  want="$max"
+  if [[ "$SERVER_MEMORY" =~ ^[0-9]+$ ]] && (( SERVER_MEMORY > want )); then
+    want="$SERVER_MEMORY"
+  fi
+  if (( mem > want )); then
+    want="$mem"
+  fi
+  # QEMU requires maxmem >= size and room for slots (page-aligned).
+  echo "$want"
+}
+
+should_attach_virtio_iso() {
+  case "${ATTACH_VIRTIO_ISO,,}" in
+    1|true|yes|on) return 0 ;;
+    0|false|no|off) return 1 ;;
+    auto|*) is_windows_os "$VM_OS" ;;
+  esac
+}
+
+append_cdrom_isos() {
+  local -n _args=$1
+  local iso
+  if should_attach_virtio_iso; then
+    for iso in "$VIRTIO_WIN_ISO" "$BALLOON_SETUP_ISO"; do
+      [[ -n "$iso" && -f "$iso" ]] || continue
+      info "Attaching ISO $(basename "$iso")"
+      _args+=(-drive "file=${iso},media=cdrom,readonly=on")
+    done
+  fi
+  for iso in "$RESCUE_ISO" "$EXTRA_ISO"; do
+    [[ -n "$iso" && -f "$iso" ]] || continue
+    info "Attaching extra ISO $(basename "$iso")"
+    _args+=(-drive "file=${iso},media=cdrom,readonly=on")
+  done
 }
 
 is_valid_qcow() {
@@ -668,10 +721,14 @@ wait_guest_ready() {
 
 boot_vm() {
   info "Booting ${VM_OS}"
-  local mem smp hostfwd lip mode SERIAL_ARG
+  local mem maxmem smp hostfwd lip mode SERIAL_ARG
   mem="$(qemu_memory_mib)"
+  maxmem="$(qemu_maxmem_mib)"
   if [[ "$mem" != "$SERVER_MEMORY" ]]; then
     info "Guest RAM ${mem}M (SERVER_MEMORY=${SERVER_MEMORY}M, QEMU headroom reserved)"
+  fi
+  if (( maxmem > mem )); then
+    info "Hot-RAM ceiling maxmem=${maxmem}M slots=${QEMU_MEM_SLOTS}"
   fi
   smp=$(smp_count)
   hostfwd=$(build_hostfwd)
@@ -695,9 +752,14 @@ boot_vm() {
     ( tail -n0 -F "${SERIAL_LOG}" 2>/dev/null & )
   fi
 
+  local mem_arg="${mem}M"
+  if (( maxmem > mem )); then
+    mem_arg="size=${mem}M,slots=${QEMU_MEM_SLOTS},maxmem=${maxmem}M"
+  fi
+
   local args=(
     -name "1vps-${P_SERVER_UUID}"
-    -m "${mem}M"
+    -m "${mem_arg}"
     -smp "$smp"
     -cpu host
     -enable-kvm
@@ -721,6 +783,7 @@ boot_vm() {
       -drive "file=${SEED_ISO},media=cdrom,readonly=on"
     )
   fi
+  append_cdrom_isos args
 
   if [[ "$UEFI" == "1" ]]; then
     local ovmf
@@ -740,6 +803,8 @@ boot_vm() {
     echo "disk_gb=${OS_DISKSIZE}"
     echo "display_mode=${mode}"
     echo "guest_ram_mib=${mem}"
+    echo "maxmem_mib=${maxmem}"
+    echo "mem_slots=${QEMU_MEM_SLOTS}"
     echo "vnc_port=${VNC_PORT}"
     echo "novnc_port=${NOVNC_PORT}"
     echo "spice_port=${SPICE_PORT}"
