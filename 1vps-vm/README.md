@@ -11,13 +11,16 @@ Objects are **public-read**:
 
 Override base URL with env `VM_IMAGE_BASE`.
 
-Sync (on the Wings node, with `/root/.1vps-s3.env`):
+Sync (prefer **dash** — better egress than Wings; needs `rclone` remote `hetzner` + optional `aria2`):
 
 ```bash
-/opt/1vps/lumenvm-net/bin/sync-images-to-s3.sh
-# or from repo:
+# Fast path: parallel aria2 downloads + rclone multipart uploads
 ./scripts/sync-images-to-s3.sh
+# Live copy on dash:
+/usr/local/sbin/sync-images-fast.sh
 ```
+
+Public objects: ~12 OS images (Debian 10–13, Ubuntu 18–24, Rocky, Alma, Alpine, Arch, Fedora 40).
 
 Warm local cache from S3:
 

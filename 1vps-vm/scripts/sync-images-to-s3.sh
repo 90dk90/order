@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
+# Fast mirror → Hetzner Object Storage (FSN).
+# Prefer: dash host (good egress) + aria2 multi-conn DL + rclone multipart UP.
 set -uo pipefail
 export PATH="/root/.local/bin:/usr/local/bin:$PATH"
 CACHE=/var/cache/1vps-vm-images
 BUCKET=hetzner:1vps-vm-images
 LOG=/var/log/1vps-vm-s3-fast.log
+DL_PARALLEL="${DL_PARALLEL:-8}"
+UP_PARALLEL="${UP_PARALLEL:-4}"
+ARIA_CONN="${ARIA_CONN:-16}"
 mkdir -p "$CACHE"
 exec >>"$LOG" 2>&1
 
@@ -16,14 +21,17 @@ declare -A URLS=(
   [ubuntu-20]="https://cloud-images.ubuntu.com/releases/20.04/release/ubuntu-20.04-server-cloudimg-amd64.img"
   [ubuntu-22]="https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
   [ubuntu-24]="https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
-  [fedora-40]="https://download.fedoraproject.org/pub/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-Generic.x86_64-40-1.14.qcow2"
+  # Fedora 40 left the live mirror tree; use archives.
+  [fedora-40]="https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-Generic.x86_64-40-1.14.qcow2"
   [rockylinux]="https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2"
   [almalinux]="https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"
   [alpine]="https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/cloud/nocloud_alpine-3.20.3-x86_64-bios-cloudinit-r0.qcow2"
   [archlinux]="https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2"
 )
 
-echo "[$(date -Is)] FAST sync start"
+OS_ORDER=(debian-10 debian-11 debian-12 debian-13 ubuntu-18 ubuntu-20 ubuntu-22 ubuntu-24 fedora-40 rockylinux almalinux alpine archlinux)
+
+echo "[$(date -Is)] FAST sync start (dl=$DL_PARALLEL up=$UP_PARALLEL aria=$ARIA_CONN)"
 rclone lsf "$BUCKET" > /tmp/s3-existing.txt 2>/dev/null || true
 cat /tmp/s3-existing.txt
 
@@ -33,10 +41,24 @@ download_one() {
     echo "CACHE $os ($(du -h "$dest" | awk '{print $1}'))"; return 0
   fi
   echo "DL $os"
-  if curl -4 -fL --retry 4 --retry-delay 2 -o "${dest}.partial" "$url"; then
-    mv -f "${dest}.partial" "$dest"; echo "OK_DL $os"
+  rm -f "${dest}.partial" "${dest}.aria2"
+  if command -v aria2c >/dev/null 2>&1; then
+    if aria2c -x "$ARIA_CONN" -s "$ARIA_CONN" -k 4M \
+      --file-allocation=none --allow-overwrite=true --auto-file-renaming=false \
+      --max-tries=8 --retry-wait=2 --timeout=60 --connect-timeout=20 \
+      -o "${os}.qcow2.partial" -d "$CACHE" "$url"
+    then
+      mv -f "${dest}.partial" "$dest"
+      echo "OK_DL $os ($(du -h "$dest" | awk '{print $1}'))"
+      return 0
+    fi
+  fi
+  if curl -4 -fL --retry 4 --retry-delay 2 --connect-timeout 20 -o "${dest}.partial" "$url"; then
+    mv -f "${dest}.partial" "$dest"
+    echo "OK_DL $os ($(du -h "$dest" | awk '{print $1}'))"
   else
-    rm -f "${dest}.partial"; echo "FAIL_DL $os"
+    rm -f "${dest}.partial"
+    echo "FAIL_DL $os"
   fi
 }
 
@@ -62,18 +84,16 @@ upload_one() {
     && echo "OK_UP $os" || echo "FAIL_UP $os"
 }
 
-# Parallel downloads (6)
 for os in "${!URLS[@]}"; do
   download_one "$os" "${URLS[$os]}" &
-  while (( $(jobs -rp | wc -l) >= 6 )); do sleep 0.5; done
+  while (( $(jobs -rp | wc -l) >= DL_PARALLEL )); do sleep 0.3; done
 done
 wait
 echo "[$(date -Is)] DL phase done"
 
-# Parallel uploads (4) — saturate dash→FSN
-for os in debian-10 debian-11 debian-12 debian-13 ubuntu-18 ubuntu-20 ubuntu-22 ubuntu-24 fedora-40 rockylinux almalinux alpine archlinux; do
+for os in "${OS_ORDER[@]}"; do
   upload_one "$os" &
-  while (( $(jobs -rp | wc -l) >= 4 )); do sleep 0.5; done
+  while (( $(jobs -rp | wc -l) >= UP_PARALLEL )); do sleep 0.3; done
 done
 wait
 echo "[$(date -Is)] FAST sync done"
