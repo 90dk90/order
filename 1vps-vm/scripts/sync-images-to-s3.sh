@@ -1,16 +1,11 @@
 #!/usr/bin/env bash
-# Download official cloud images then upload to Hetzner S3 (public-read).
-# Requires: /root/.1vps-s3.env (AWS_* from panel) and aws CLI.
-set -euo pipefail
-export PATH="/usr/local/bin:$PATH"
-ENV_FILE="${S3_ENV_FILE:-/root/.1vps-s3.env}"
-# shellcheck disable=SC1090
-set -a; source "$ENV_FILE"; set +a
-
-ENDPOINT="${AWS_ENDPOINT:?}"
-BUCKET="${VM_IMAGES_BUCKET:-1vps-vm-images}"
-CACHE="${CACHE_DIR:-/opt/1vps/lumenvm-net/vm-images}"
+set -uo pipefail
+export PATH="/root/.local/bin:/usr/local/bin:$PATH"
+CACHE=/var/cache/1vps-vm-images
+BUCKET=hetzner:1vps-vm-images
+LOG=/var/log/1vps-vm-s3-fast.log
 mkdir -p "$CACHE"
+exec >>"$LOG" 2>&1
 
 declare -A URLS=(
   [debian-10]="https://cloud.debian.org/images/cloud/buster/latest/debian-10-genericcloud-amd64.qcow2"
@@ -28,27 +23,58 @@ declare -A URLS=(
   [archlinux]="https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2"
 )
 
-echo "[$(date -Is)] sync start → s3://${BUCKET}"
+echo "[$(date -Is)] FAST sync start"
+rclone lsf "$BUCKET" > /tmp/s3-existing.txt 2>/dev/null || true
+cat /tmp/s3-existing.txt
 
-for os in debian-10 debian-11 debian-12 debian-13 ubuntu-18 ubuntu-20 ubuntu-22 ubuntu-24 fedora-40 rockylinux almalinux alpine archlinux; do
-  dest="${CACHE}/${os}.qcow2"
-  url="${URLS[$os]}"
-  echo "==== $os ===="
-  if [[ -f "$dest" && $(stat -c%s "$dest") -gt 1048576 ]] && qemu-img info "$dest" >/dev/null 2>&1; then
-    echo "local cache hit ($(du -h "$dest" | awk '{print $1}'))"
-  else
-    echo "download $url"
-    tmp="${dest}.partial"
-    rm -f "$tmp"
-    curl -4 -fL --retry 5 --retry-delay 3 --connect-timeout 45 -o "$tmp" "$url"
-    qemu-img info "$tmp" >/dev/null
-    mv -f "$tmp" "$dest"
+download_one() {
+  local os="$1" url="$2" dest="$CACHE/${os}.qcow2"
+  if [[ -f "$dest" && $(stat -c%s "$dest") -gt 1048576 ]]; then
+    echo "CACHE $os ($(du -h "$dest" | awk '{print $1}'))"; return 0
   fi
-  echo "upload s3://${BUCKET}/${os}.qcow2"
-  aws --endpoint-url "$ENDPOINT" s3 cp "$dest" "s3://${BUCKET}/${os}.qcow2" --acl public-read
-  code=$(curl -4 -sI -o /dev/null -w '%{http_code}' "https://fsn1.your-objectstorage.com/${BUCKET}/${os}.qcow2" || true)
-  echo "public_http=$code"
-done
+  echo "DL $os"
+  if curl -4 -fL --retry 4 --retry-delay 2 -o "${dest}.partial" "$url"; then
+    mv -f "${dest}.partial" "$dest"; echo "OK_DL $os"
+  else
+    rm -f "${dest}.partial"; echo "FAIL_DL $os"
+  fi
+}
 
-echo "[$(date -Is)] sync done"
-aws --endpoint-url "$ENDPOINT" s3 ls "s3://${BUCKET}/"
+upload_one() {
+  local os="$1" dest="$CACHE/${os}.qcow2"
+  [[ -f "$dest" ]] || { echo "SKIP_UP $os"; return 0; }
+  local local_sz remote
+  local_sz=$(stat -c%s "$dest")
+  remote=$(rclone ls "$BUCKET/${os}.qcow2" 2>/dev/null | awk '{print $1}')
+  if [[ -n "${remote:-}" && "$remote" == "$local_sz" ]]; then
+    echo "SKIP_UP $os (same)"; return 0
+  fi
+  echo "UP $os ($(du -h "$dest" | awk '{print $1}'))"
+  rclone copyto "$dest" "$BUCKET/${os}.qcow2" \
+    --s3-acl public-read \
+    --s3-chunk-size 64M \
+    --s3-upload-concurrency 32 \
+    --transfers 1 \
+    --checkers 16 \
+    --retries 8 \
+    --low-level-retries 20 \
+    --stats 20s --stats-one-line \
+    && echo "OK_UP $os" || echo "FAIL_UP $os"
+}
+
+# Parallel downloads (6)
+for os in "${!URLS[@]}"; do
+  download_one "$os" "${URLS[$os]}" &
+  while (( $(jobs -rp | wc -l) >= 6 )); do sleep 0.5; done
+done
+wait
+echo "[$(date -Is)] DL phase done"
+
+# Parallel uploads (4) — saturate dash→FSN
+for os in debian-10 debian-11 debian-12 debian-13 ubuntu-18 ubuntu-20 ubuntu-22 ubuntu-24 fedora-40 rockylinux almalinux alpine archlinux; do
+  upload_one "$os" &
+  while (( $(jobs -rp | wc -l) >= 4 )); do sleep 0.5; done
+done
+wait
+echo "[$(date -Is)] FAST sync done"
+rclone lsl "$BUCKET"
