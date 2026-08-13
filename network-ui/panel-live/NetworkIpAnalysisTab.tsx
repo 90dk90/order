@@ -56,6 +56,7 @@ type BreakdownItem = {
     sub?: string;
     value: number;
     packets: number;
+    unit: 'bytes' | 'packets';
 };
 
 const REFRESH_MS = 15000;
@@ -115,6 +116,27 @@ const protocolBytes = (p: FirewallProtocolCounter, dir: Direction) =>
 const protocolPackets = (p: FirewallProtocolCounter, dir: Direction) =>
     Math.max(0, Number(dir === 'in' ? p.packets_in : p.packets_out) || 0);
 
+const isWildcardPeer = (ip: string) => {
+    const v = ip.trim().toLowerCase();
+    return (
+        !v ||
+        v === '0.0.0.0/0' ||
+        v === '0.0.0.0' ||
+        v === '::/0' ||
+        v === '::' ||
+        v === 'any' ||
+        v === 'all' ||
+        v === '*'
+    );
+};
+
+const ruleWeight = (r: FirewallRuleCounter) => {
+    const bytes = Math.max(0, Number(r.bytes) || 0);
+    const packets = Math.max(0, Number(r.packets) || 0);
+    // Prefer bytes; fall back to packets when counters only expose packet hits.
+    return bytes > 0 ? bytes : packets;
+};
+
 const formatTick = (ts: number, range: RangeKey) => {
     const d = new Date(ts * 1000);
     if (range === '7d' || range === '30d') {
@@ -135,9 +157,10 @@ export default ({ row, prefixLabel }: Props) => {
     const [error, setError] = useState<string | null>(null);
     const [traffic, setTraffic] = useState<FirewallTraffic | null>(null);
     const [direction, setDirection] = useState<Direction>('in');
-    const [kind, setKind] = useState<BreakdownKind>('ports');
+    const [kind, setKind] = useState<BreakdownKind>('protocols');
     const [range, setRange] = useState<RangeKey>('24h');
     const [fetchedAt, setFetchedAt] = useState<number | null>(null);
+    const [kindTouched, setKindTouched] = useState(false);
 
     const load = useCallback(
         async (opts?: { silent?: boolean }) => {
@@ -209,55 +232,85 @@ export default ({ row, prefixLabel }: Props) => {
         () => ({
             in: protocols.reduce((s, p) => s + protocolBytes(p, 'in'), 0),
             out: protocols.reduce((s, p) => s + protocolBytes(p, 'out'), 0),
-            rules: rules.reduce((s, r) => s + Math.max(0, Number(r.bytes) || 0), 0),
+            rules: rules.reduce((s, r) => s + ruleWeight(r), 0),
         }),
         [protocols, rules]
     );
 
-    const breakdown = useMemo((): BreakdownItem[] => {
-        if (kind === 'countries') return [];
-        if (kind === 'protocols') {
-            return protocols
-                .map((p) => ({
-                    key: String(p.id),
+    const protocolBreakdown = useMemo((): BreakdownItem[] => {
+        const fromApi = protocols
+            .map((p) => {
+                const bytes = protocolBytes(p, direction);
+                const packets = protocolPackets(p, direction);
+                return {
+                    key: String(p.id || p.label),
                     label: p.label || String(p.id).toUpperCase(),
-                    sub: `${protocolPackets(p, direction).toLocaleString('fr-FR')} paquets`,
-                    value: protocolBytes(p, direction),
-                    packets: protocolPackets(p, direction),
-                }))
-                .filter((x) => x.value > 0)
-                .sort((a, b) => b.value - a.value)
-                .slice(0, 10);
+                    sub: `${packets.toLocaleString('fr-FR')} paquets`,
+                    value: bytes > 0 ? bytes : packets,
+                    packets,
+                    unit: (bytes > 0 ? 'bytes' : 'packets') as 'bytes' | 'packets',
+                };
+            })
+            .filter((x) => x.value > 0);
+
+        if (fromApi.length) {
+            return fromApi.sort((a, b) => b.value - a.value).slice(0, 10);
         }
-        if (kind === 'ports') {
-            const map = new Map<string, BreakdownItem>();
-            rules.forEach((r: FirewallRuleCounter) => {
-                const port = Number(r.port) || 0;
-                if (port <= 0) return;
-                const proto = String(r.protocol || 'any').toUpperCase();
-                const key = `${proto}:${port}`;
-                const prev = map.get(key);
-                const value = Math.max(0, Number(r.bytes) || 0);
-                const packets = Math.max(0, Number(r.packets) || 0);
-                if (!prev) {
-                    map.set(key, { key, label: `Port ${port}`, sub: proto, value, packets });
-                } else {
-                    prev.value += value;
-                    prev.packets += packets;
-                }
-            });
-            return Array.from(map.values())
-                .filter((x) => x.value > 0)
-                .sort((a, b) => b.value - a.value)
-                .slice(0, 10);
-        }
+
+        const fallback: BreakdownItem[] = [
+            { key: 'tcp', label: 'TCP', value: Math.max(0, Number(traffic?.tcp) || 0), packets: Math.max(0, Number(traffic?.tcp) || 0), unit: 'packets' },
+            { key: 'udp', label: 'UDP', value: Math.max(0, Number(traffic?.udp) || 0), packets: Math.max(0, Number(traffic?.udp) || 0), unit: 'packets' },
+            { key: 'icmp', label: 'ICMP', value: Math.max(0, Number(traffic?.icmp) || 0), packets: Math.max(0, Number(traffic?.icmp) || 0), unit: 'packets' },
+            { key: 'other', label: 'Autre', value: Math.max(0, Number(traffic?.other) || 0), packets: Math.max(0, Number(traffic?.other) || 0), unit: 'packets' },
+        ].filter((x) => x.value > 0);
+
+        return fallback.sort((a, b) => b.value - a.value);
+    }, [protocols, direction, traffic]);
+
+    const portsBreakdown = useMemo((): BreakdownItem[] => {
+        const map = new Map<string, BreakdownItem>();
+        rules.forEach((r: FirewallRuleCounter) => {
+            const port = Number(r.port) || 0;
+            if (port <= 0) return;
+            const proto = String(r.protocol || 'any').toUpperCase();
+            const key = `${proto}:${port}`;
+            const bytes = Math.max(0, Number(r.bytes) || 0);
+            const packets = Math.max(0, Number(r.packets) || 0);
+            const unit: 'bytes' | 'packets' = bytes > 0 ? 'bytes' : 'packets';
+            const value = bytes > 0 ? bytes : packets;
+            if (value <= 0) return;
+            const prev = map.get(key);
+            if (!prev) {
+                map.set(key, {
+                    key,
+                    label: `Port ${port}`,
+                    sub: unit === 'bytes' ? proto : `${proto} · paquets`,
+                    value,
+                    packets,
+                    unit,
+                });
+            } else {
+                prev.value += value;
+                prev.packets += packets;
+                if (bytes > 0) prev.unit = 'bytes';
+            }
+        });
+        return Array.from(map.values())
+            .sort((a, b) => b.value - a.value)
+            .slice(0, 10);
+    }, [rules]);
+
+    const peersBreakdown = useMemo((): BreakdownItem[] => {
         const map = new Map<string, BreakdownItem>();
         rules.forEach((r: FirewallRuleCounter) => {
             const peer = String(r.ip || '').trim();
-            if (!peer) return;
-            const prev = map.get(peer);
-            const value = Math.max(0, Number(r.bytes) || 0);
+            if (isWildcardPeer(peer)) return;
+            const bytes = Math.max(0, Number(r.bytes) || 0);
             const packets = Math.max(0, Number(r.packets) || 0);
+            const unit: 'bytes' | 'packets' = bytes > 0 ? 'bytes' : 'packets';
+            const value = bytes > 0 ? bytes : packets;
+            if (value <= 0) return;
+            const prev = map.get(peer);
             if (!prev) {
                 map.set(peer, {
                     key: peer,
@@ -265,20 +318,46 @@ export default ({ row, prefixLabel }: Props) => {
                     sub: String(r.protocol || r.action || 'rule').toUpperCase(),
                     value,
                     packets,
+                    unit,
                 });
             } else {
                 prev.value += value;
                 prev.packets += packets;
+                if (bytes > 0) prev.unit = 'bytes';
             }
         });
         return Array.from(map.values())
-            .filter((x) => x.value > 0)
             .sort((a, b) => b.value - a.value)
             .slice(0, 10);
-    }, [kind, protocols, rules, direction]);
+    }, [rules]);
 
-    const volumeBase =
-        kind === 'protocols' ? (direction === 'in' ? volumes.in : volumes.out) : volumes.rules;
+    const breakdown = useMemo((): BreakdownItem[] => {
+        if (kind === 'countries') return [];
+        if (kind === 'protocols') return protocolBreakdown;
+        if (kind === 'ports') return portsBreakdown;
+        return peersBreakdown;
+    }, [kind, protocolBreakdown, portsBreakdown, peersBreakdown]);
+
+    // Prefer a breakdown that actually has data on first load.
+    useEffect(() => {
+        if (!traffic || kindTouched) return;
+        const order: BreakdownKind[] = ['protocols', 'ports', 'peers'];
+        const has: Record<BreakdownKind, boolean> = {
+            protocols: protocolBreakdown.length > 0,
+            ports: portsBreakdown.length > 0,
+            peers: peersBreakdown.length > 0,
+            countries: false,
+        };
+        if (has[kind]) return;
+        const next = order.find((k) => has[k]);
+        if (next) setKind(next);
+    }, [traffic, kind, kindTouched, protocolBreakdown, portsBreakdown, peersBreakdown]);
+
+    const volumeBase = useMemo(() => {
+        if (breakdown.length) return breakdown.reduce((s, x) => s + x.value, 0);
+        if (kind === 'protocols') return direction === 'in' ? volumes.in : volumes.out;
+        return volumes.rules;
+    }, [breakdown, kind, direction, volumes]);
 
     const lastSample = filteredHistory.length ? filteredHistory[filteredHistory.length - 1] : null;
 
@@ -393,12 +472,17 @@ export default ({ row, prefixLabel }: Props) => {
 
     const emptyCopy =
         kind === 'ports'
-            ? 'Aucun port significatif sur cette période.'
+            ? 'Aucun compteur de port actif pour le moment. Les règles firewall n’ont pas encore de volume mesuré — essayez Protocoles.'
             : kind === 'peers'
-              ? 'Aucune pair IP significative sur cette période.'
+              ? 'Aucune pair IP distante dans les règles firewall (souvent uniquement 0.0.0.0/0). Essayez Protocoles ou Ports.'
               : kind === 'countries'
                 ? 'Aucune répartition pays disponible.'
-                : 'Aucun volume significatif pour ce filtre.';
+                : 'Aucun volume protocole significatif pour ce sens.';
+
+    const formatBreakdownValue = (item: BreakdownItem) => {
+        if (item.unit === 'packets') return `${item.value.toLocaleString('fr-FR')} pkt`;
+        return formatBytes(item.value);
+    };
 
     if (!uuid) {
         return (
@@ -565,11 +649,14 @@ export default ({ row, prefixLabel }: Props) => {
                             />
                             <SegmentedControl
                                 value={kind}
-                                onChange={setKind}
+                                onChange={(v) => {
+                                    setKindTouched(true);
+                                    setKind(v);
+                                }}
                                 options={[
+                                    { id: 'protocols', label: 'Protocoles' },
                                     { id: 'ports', label: 'Ports' },
                                     { id: 'peers', label: 'Pairs IP' },
-                                    { id: 'protocols', label: 'Protocoles' },
                                     { id: 'countries', label: 'Pays' },
                                 ]}
                             />
@@ -627,7 +714,7 @@ export default ({ row, prefixLabel }: Props) => {
                                         </div>
                                         <div css={tw`flex-shrink-0 text-right`}>
                                             <p css={tw`font-semibold tabular-nums m-0`} style={{ color: CloudUI.text }}>
-                                                {formatBytes(item.value)}
+                                                {formatBreakdownValue(item)}
                                             </p>
                                             <p css={tw`text-xs tabular-nums m-0 mt-0.5`} style={{ color: CloudUI.textMuted }}>
                                                 {pct.toFixed(1)} %
@@ -648,8 +735,12 @@ export default ({ row, prefixLabel }: Props) => {
 
                 {kind !== 'countries' && kind !== 'protocols' ? (
                     <MetaLine css={tw`mt-4`}>
-                        Les compteurs de règles firewall ne distinguent pas le sens : ports et pairs sont globaux. Le
-                        filtre Entrant / Sortant s’applique aux protocoles et aux graphiques.
+                        Ports et pairs viennent des compteurs de règles firewall. Si les compteurs sont à zéro,
+                        basculez sur Protocoles (données snmp). Les IP 0.0.0.0/0 ne sont pas des pairs.
+                    </MetaLine>
+                ) : kind === 'protocols' ? (
+                    <MetaLine css={tw`mt-4`}>
+                        Répartition par protocole (TCP/UDP/ICMP…). Le filtre Entrant / Sortant s’applique ici.
                     </MetaLine>
                 ) : null}
             </Panel>
