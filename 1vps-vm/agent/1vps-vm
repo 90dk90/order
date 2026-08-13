@@ -7,7 +7,7 @@
 # Images: Hetzner S3 only (public HTTP or private rclone). No Lumen API.
 set -euo pipefail
 
-VERSION="0.6.1"
+VERSION="0.6.4"
 HOME_DIR="${HOME_DIR:-/home/container}"
 CACHE_DIR="${CACHE_DIR:-/opt/1vps/lumenvm-net/vm-images}"
 WORKDIR="${HOME_DIR}"
@@ -546,7 +546,14 @@ apply_display_args() {
 boot_vm() {
   info "Booting ${VM_OS}"
   local mem="${SERVER_MEMORY}"
-  local smp hostfwd lip mode
+  local smp hostfwd lip mode SERIAL_ARG
+  # Wings sets the container cgroup Memory == SERVER_MEMORY. QEMU guest RAM
+  # must leave headroom for the emulator or the cgroup OOM-kills us (exit 137).
+  local overhead=768
+  if [[ "$mem" =~ ^[0-9]+$ ]] && [[ "$mem" -gt $((overhead + 512)) ]]; then
+    mem=$((mem - overhead))
+    info "Guest RAM ${mem}M (SERVER_MEMORY=${SERVER_MEMORY}M − ${overhead}M QEMU headroom)"
+  fi
   smp=$(smp_count)
   hostfwd=$(build_hostfwd)
   mode=$(display_mode_norm)
@@ -556,13 +563,21 @@ boot_vm() {
   info "DISPLAY_MODE=${mode}"
 
   mkdir -p "${WORKDIR}/shared"
-  : >"${SERIAL_LOG}"
 
   DISPLAY_ARGS=()
   apply_display_args
   announce_display
 
-  # Serial on stdio → Wings panel console (docker attach). Also keep a file copy via second UART.
+  # Always use file-backed serial under Wings. A PTY/stdio attach makes QEMU
+  # exit when the console pipe closes → Wings crash-loop.
+  : >"${SERIAL_LOG}"
+  SERIAL_ARG="file:${SERIAL_LOG}"
+  if [[ "${CONSOLE_STDIO:-0}" == "1" && -t 1 ]]; then
+    SERIAL_ARG="stdio"
+  else
+    ( tail -n0 -F "${SERIAL_LOG}" 2>/dev/null & )
+  fi
+
   local args=(
     -name "1vps-${P_SERVER_UUID}"
     -m "${mem}M"
@@ -570,8 +585,7 @@ boot_vm() {
     -cpu host
     -enable-kvm
     -display none
-    -serial stdio
-    -serial "file:${SERIAL_LOG}"
+    -serial "${SERIAL_ARG}"
     -usb -device usb-tablet
     -smbios "type=1,manufacturer=1VPS,product=1vps-vm,version=${VERSION},serial=${P_SERVER_UUID}"
     -virtfs "local,path=${WORKDIR}/shared,mount_tag=shared,security_model=none"
