@@ -392,9 +392,14 @@ export default () => {
                                 title={'Historique des attaques'}
                                 description={`Événements DDoS enregistrés pour ${prefix}`}
                                 actions={
-                                    <GhostButton onClick={loadAttacks} disabled={attacksLoading} title={'Actualiser'}>
-                                        <FontAwesomeIcon icon={faSyncAlt} spin={attacksLoading} /> Actualiser
-                                    </GhostButton>
+                                    <>
+                                        <GhostLink to={'/network/ddos'} compact>
+                                            Voir toutes les attaques
+                                        </GhostLink>
+                                        <GhostButton onClick={loadAttacks} disabled={attacksLoading} title={'Actualiser'}>
+                                            <FontAwesomeIcon icon={faSyncAlt} spin={attacksLoading} /> Actualiser
+                                        </GhostButton>
+                                    </>
                                 }
                             />
 

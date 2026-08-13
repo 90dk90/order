@@ -1,29 +1,73 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import tw from 'twin.macro';
+import {
+    Chart as ChartJS,
+    CategoryScale,
+    LinearScale,
+    PointElement,
+    LineElement,
+    Tooltip,
+    Legend,
+    Filler,
+    type ChartOptions,
+} from 'chart.js';
+import { Line } from 'react-chartjs-2';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faChartPie, faExclamationTriangle, faSyncAlt } from '@fortawesome/free-solid-svg-icons';
-import getFirewallTraffic, {
+import {
+    faArrowDown,
+    faArrowUp,
+    faChartPie,
+    faGlobe,
+    faNetworkWired,
+    faSyncAlt,
+} from '@fortawesome/free-solid-svg-icons';
+import getFirewallTraffic from '@/api/server/firewall/getFirewallTraffic';
+import type {
     FirewallProtocolCounter,
     FirewallRuleCounter,
     FirewallTraffic,
+    FirewallTrafficSample,
 } from '@/api/server/firewall/getFirewallTraffic';
-import { NetworkIpRow } from '@/api/network';
-import { CloudUI, cloudPanelStyle } from '@/components/hms/cloudUi';
-import { EmptyState, Panel } from '@/components/network/NetworkUi';
+import { CloudUI } from '@/components/hms/cloudUi';
+import { Alert } from '@/components/elements/alert';
+import {
+    EmptyState,
+    GhostButton,
+    MetaLine,
+    Panel,
+    PanelHeader,
+    SegmentedControl,
+    SelectField,
+    StatCard,
+} from '@/components/network/NetworkUi';
+import type { NetworkIpRow } from '@/api/network';
 
-type Props = {
-    row: NetworkIpRow;
-    prefixLabel: string;
-};
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend, Filler);
 
 type Direction = 'in' | 'out';
-type BreakdownKind = 'ports' | 'peers' | 'protocols';
+type BreakdownKind = 'ports' | 'peers' | 'protocols' | 'countries';
+type RangeKey = '5m' | '15m' | '30m' | '1h' | '3h' | '8h' | '12h' | '24h' | '7d' | '30d';
 
 type BreakdownItem = {
     key: string;
     label: string;
     sub?: string;
     value: number;
+    packets: number;
 };
+
+const RANGES: { id: RangeKey; label: string; seconds: number }[] = [
+    { id: '5m', label: '5 min', seconds: 5 * 60 },
+    { id: '15m', label: '15 min', seconds: 15 * 60 },
+    { id: '30m', label: '30 min', seconds: 30 * 60 },
+    { id: '1h', label: '1 h', seconds: 3600 },
+    { id: '3h', label: '3 h', seconds: 3 * 3600 },
+    { id: '8h', label: '8 h', seconds: 8 * 3600 },
+    { id: '12h', label: '12 h', seconds: 12 * 3600 },
+    { id: '24h', label: '24 h', seconds: 86400 },
+    { id: '7d', label: '7 j', seconds: 7 * 86400 },
+    { id: '30d', label: '30 j', seconds: 30 * 86400 },
+];
 
 const formatBytes = (n: number) => {
     if (!Number.isFinite(n) || n <= 0) return '0 o';
@@ -49,19 +93,46 @@ const formatRate = (bps: number) => {
     return `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${units[i]}`;
 };
 
+const formatPps = (n: number) => {
+    if (!Number.isFinite(n) || n <= 0) return '0 pps';
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)} Mpps`;
+    if (n >= 1000) return `${(n / 1000).toFixed(1)} Kpps`;
+    return `${Math.round(n)} pps`;
+};
+
+const samplePps = (h: FirewallTrafficSample, dir: Direction) => {
+    if (dir === 'in') return Math.max(0, (h.tcp_in || 0) + (h.udp_in || 0) + (h.icmp_in || 0));
+    return Math.max(0, (h.tcp_out || 0) + (h.udp_out || 0) + (h.icmp_out || 0));
+};
+
 const protocolBytes = (p: FirewallProtocolCounter, dir: Direction) =>
     Math.max(0, Number(dir === 'in' ? p.bytes_in : p.bytes_out) || 0);
 
 const protocolPackets = (p: FirewallProtocolCounter, dir: Direction) =>
     Math.max(0, Number(dir === 'in' ? p.packets_in : p.packets_out) || 0);
 
-const NetworkIpAnalysisTab = ({ row, prefixLabel }: Props) => {
+const formatTick = (ts: number, range: RangeKey) => {
+    const d = new Date(ts * 1000);
+    if (range === '7d' || range === '30d') {
+        return d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' });
+    }
+    return d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+};
+
+interface Props {
+    row: NetworkIpRow;
+    prefixLabel: string;
+}
+
+export default ({ row, prefixLabel }: Props) => {
     const uuid = row.service?.uuid || '';
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [traffic, setTraffic] = useState<FirewallTraffic | null>(null);
     const [direction, setDirection] = useState<Direction>('in');
-    const [kind, setKind] = useState<BreakdownKind>('protocols');
+    const [kind, setKind] = useState<BreakdownKind>('ports');
+    const [range, setRange] = useState<RangeKey>('24h');
+    const [fetchedAt, setFetchedAt] = useState<number | null>(null);
 
     const load = useCallback(async () => {
         if (!uuid) {
@@ -74,6 +145,7 @@ const NetworkIpAnalysisTab = ({ row, prefixLabel }: Props) => {
         try {
             const data = await getFirewallTraffic(uuid);
             setTraffic(data);
+            setFetchedAt(Date.now());
         } catch (e: any) {
             setTraffic(null);
             setError(e?.message || 'Impossible de récupérer l’analyse du trafic.');
@@ -89,18 +161,41 @@ const NetworkIpAnalysisTab = ({ row, prefixLabel }: Props) => {
     const protocols = useMemo(() => traffic?.protocols || [], [traffic]);
     const rules = useMemo(() => traffic?.rules || [], [traffic]);
 
-    const totals = useMemo(() => {
-        const protocolTotal = protocols.reduce((sum, p) => sum + protocolBytes(p, direction), 0);
-        const ruleTotal = rules.reduce((sum, r) => sum + Math.max(0, Number(r.bytes) || 0), 0);
-        return {
-            protocol: protocolTotal,
-            rules: ruleTotal,
-            ifaceRx: Math.max(0, Number(traffic?.interface?.rx_bps) || 0),
-            ifaceTx: Math.max(0, Number(traffic?.interface?.tx_bps) || 0),
-        };
-    }, [protocols, rules, direction, traffic]);
+    const filteredHistory = useMemo(() => {
+        const history = traffic?.history || [];
+        if (!history.length) return [];
+        const seconds = RANGES.find((r) => r.id === range)?.seconds ?? 86400;
+        const cutoff = Math.floor(Date.now() / 1000) - seconds;
+        const sliced = history.filter((h) => (h.t || 0) >= cutoff);
+        return sliced.length ? sliced : history.slice(-Math.min(history.length, 120));
+    }, [traffic, range]);
+
+    const peaks = useMemo(() => {
+        if (!filteredHistory.length) {
+            return { inBps: 0, outBps: 0, inPps: 0, outPps: 0 };
+        }
+        return filteredHistory.reduce(
+            (acc, h) => ({
+                inBps: Math.max(acc.inBps, h.rx_bps || 0),
+                outBps: Math.max(acc.outBps, h.tx_bps || 0),
+                inPps: Math.max(acc.inPps, samplePps(h, 'in')),
+                outPps: Math.max(acc.outPps, samplePps(h, 'out')),
+            }),
+            { inBps: 0, outBps: 0, inPps: 0, outPps: 0 }
+        );
+    }, [filteredHistory]);
+
+    const volumes = useMemo(
+        () => ({
+            in: protocols.reduce((s, p) => s + protocolBytes(p, 'in'), 0),
+            out: protocols.reduce((s, p) => s + protocolBytes(p, 'out'), 0),
+            rules: rules.reduce((s, r) => s + Math.max(0, Number(r.bytes) || 0), 0),
+        }),
+        [protocols, rules]
+    );
 
     const breakdown = useMemo((): BreakdownItem[] => {
+        if (kind === 'countries') return [];
         if (kind === 'protocols') {
             return protocols
                 .map((p) => ({
@@ -108,6 +203,7 @@ const NetworkIpAnalysisTab = ({ row, prefixLabel }: Props) => {
                     label: p.label || String(p.id).toUpperCase(),
                     sub: `${protocolPackets(p, direction).toLocaleString('fr-FR')} paquets`,
                     value: protocolBytes(p, direction),
+                    packets: protocolPackets(p, direction),
                 }))
                 .filter((x) => x.value > 0)
                 .sort((a, b) => b.value - a.value)
@@ -118,18 +214,16 @@ const NetworkIpAnalysisTab = ({ row, prefixLabel }: Props) => {
             rules.forEach((r: FirewallRuleCounter) => {
                 const port = Number(r.port) || 0;
                 if (port <= 0) return;
-                const key = `${String(r.protocol || 'any').toLowerCase()}:${port}`;
+                const proto = String(r.protocol || 'any').toUpperCase();
+                const key = `${proto}:${port}`;
                 const prev = map.get(key);
                 const value = Math.max(0, Number(r.bytes) || 0);
+                const packets = Math.max(0, Number(r.packets) || 0);
                 if (!prev) {
-                    map.set(key, {
-                        key,
-                        label: `Port ${port}`,
-                        sub: String(r.protocol || 'any').toUpperCase(),
-                        value,
-                    });
+                    map.set(key, { key, label: `Port ${port}`, sub: proto, value, packets });
                 } else {
                     prev.value += value;
+                    prev.packets += packets;
                 }
             });
             return Array.from(map.values())
@@ -143,15 +237,18 @@ const NetworkIpAnalysisTab = ({ row, prefixLabel }: Props) => {
             if (!peer) return;
             const prev = map.get(peer);
             const value = Math.max(0, Number(r.bytes) || 0);
+            const packets = Math.max(0, Number(r.packets) || 0);
             if (!prev) {
                 map.set(peer, {
                     key: peer,
                     label: peer,
-                    sub: String(r.action || r.protocol || 'rule'),
+                    sub: String(r.protocol || r.action || 'rule').toUpperCase(),
                     value,
+                    packets,
                 });
             } else {
                 prev.value += value;
+                prev.packets += packets;
             }
         });
         return Array.from(map.values())
@@ -160,166 +257,342 @@ const NetworkIpAnalysisTab = ({ row, prefixLabel }: Props) => {
             .slice(0, 10);
     }, [kind, protocols, rules, direction]);
 
-    const volumeBase = kind === 'protocols' ? totals.protocol : totals.rules;
-    const chip = (active: boolean) =>
-        `inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-semibold transition ${
-            active
-                ? 'border-transparent text-white'
-                : 'border-[var(--border)] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)]'
-        }`;
+    const volumeBase =
+        kind === 'protocols' ? (direction === 'in' ? volumes.in : volumes.out) : volumes.rules;
+
+    const lastSample = filteredHistory.length ? filteredHistory[filteredHistory.length - 1] : null;
+
+    const bpsChart = useMemo(() => {
+        return {
+            labels: filteredHistory.map((h) => formatTick(h.t || 0, range)),
+            datasets: [
+                {
+                    label: 'Entrant',
+                    data: filteredHistory.map((h) => Number(((h.rx_bps || 0) / 1_000_000).toFixed(3))),
+                    borderColor: '#10b981',
+                    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 0,
+                    borderWidth: 2,
+                },
+                {
+                    label: 'Sortant',
+                    data: filteredHistory.map((h) => Number(((h.tx_bps || 0) / 1_000_000).toFixed(3))),
+                    borderColor: '#34d399',
+                    backgroundColor: 'rgba(52, 211, 153, 0.08)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 0,
+                    borderWidth: 2,
+                },
+            ],
+        };
+    }, [filteredHistory, range]);
+
+    const ppsChart = useMemo(() => {
+        return {
+            labels: filteredHistory.map((h) => formatTick(h.t || 0, range)),
+            datasets: [
+                {
+                    label: 'PPS entrant',
+                    data: filteredHistory.map((h) => samplePps(h, 'in')),
+                    borderColor: '#10b981',
+                    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 0,
+                    borderWidth: 2,
+                },
+                {
+                    label: 'PPS sortant',
+                    data: filteredHistory.map((h) => samplePps(h, 'out')),
+                    borderColor: '#34d399',
+                    backgroundColor: 'rgba(52, 211, 153, 0.08)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 0,
+                    borderWidth: 2,
+                },
+            ],
+        };
+    }, [filteredHistory, range]);
+
+    const makeChartOptions = (unit: string): ChartOptions<'line'> => ({
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+            legend: {
+                display: true,
+                labels: {
+                    color: CloudUI.textSecondary,
+                    boxWidth: 10,
+                    font: { size: 11, family: CloudUI.font },
+                },
+            },
+            tooltip: {
+                backgroundColor: CloudUI.surface,
+                titleColor: CloudUI.text,
+                bodyColor: CloudUI.textSecondary,
+                borderColor: CloudUI.border,
+                borderWidth: 1,
+            },
+        },
+        scales: {
+            x: {
+                ticks: { color: CloudUI.textMuted, maxTicksLimit: 6, font: { size: 10 } },
+                grid: { color: 'rgba(148,163,184,0.12)' },
+            },
+            y: {
+                beginAtZero: true,
+                ticks: { color: CloudUI.textMuted, font: { size: 10 } },
+                grid: { color: 'rgba(148,163,184,0.12)' },
+                title: {
+                    display: true,
+                    text: unit,
+                    color: CloudUI.textMuted,
+                    font: { size: 10 },
+                },
+            },
+        },
+    });
+
+    const bpsOptions = useMemo(() => makeChartOptions('Mbps'), []);
+    const ppsOptions = useMemo(() => makeChartOptions('pps'), []);
+
+    const kpiValue = (v: string) => (loading && !traffic ? '…' : v);
+
+    const emptyCopy =
+        kind === 'ports'
+            ? 'Aucun port significatif sur cette période.'
+            : kind === 'peers'
+              ? 'Aucune pair IP significative sur cette période.'
+              : kind === 'countries'
+                ? 'Aucune répartition pays disponible.'
+                : 'Aucun volume significatif pour ce filtre.';
 
     if (!uuid) {
         return (
             <EmptyState
                 icon={<FontAwesomeIcon icon={faChartPie} />}
-                title="Analyse indisponible"
-                description="Associez cette IP à un VPS pour analyser le trafic applicatif (ports, pairs, protocoles)."
+                title='Analyse indisponible'
+                description='Associez cette IP à un VPS pour analyser le trafic applicatif (ports, pairs, protocoles).'
             />
         );
     }
 
     return (
-        <div className={'space-y-5'}>
-            <div className={'flex flex-wrap items-start justify-between gap-3'}>
-                <div className={'min-w-0'}>
-                    <h2 className={'text-base font-semibold'} style={{ color: CloudUI.text }}>
-                        Analyse du trafic
-                    </h2>
-                    <p className={'mt-1 text-sm'} style={{ color: CloudUI.textMuted }}>
-                        Trafic applicatif pour <span className={'font-mono'}>{prefixLabel}</span>
-                        {traffic?.interface?.name ? (
-                            <span>
-                                {' '}
-                                · iface <span className={'font-mono'}>{traffic.interface.name}</span>
-                            </span>
-                        ) : null}
-                    </p>
-                </div>
-                <button
-                    type={'button'}
-                    onClick={() => void load()}
-                    disabled={loading}
-                    className={'inline-flex h-9 items-center gap-2 rounded-md border px-3 text-xs font-semibold disabled:opacity-50'}
-                    style={{ borderColor: CloudUI.border, color: CloudUI.text, background: CloudUI.surface }}
-                >
-                    <FontAwesomeIcon icon={faSyncAlt} className={loading ? 'animate-spin' : undefined} />
-                    Actualiser
-                </button>
+        <div css={tw`space-y-5`}>
+            <div css={tw`grid gap-3 sm:grid-cols-2 lg:grid-cols-4`}>
+                <StatCard
+                    label='Pic entrant'
+                    value={kpiValue(formatRate(peaks.inBps))}
+                    hint='Débit RX max sur la période'
+                    icon={<FontAwesomeIcon icon={faArrowDown} />}
+                />
+                <StatCard
+                    label='Pic sortant'
+                    value={kpiValue(formatRate(peaks.outBps))}
+                    hint='Débit TX max sur la période'
+                    icon={<FontAwesomeIcon icon={faArrowUp} />}
+                />
+                <StatCard
+                    label='Pic PPS entrant'
+                    value={kpiValue(formatPps(peaks.inPps))}
+                    hint='Paquets / s max (RX)'
+                    icon={<FontAwesomeIcon icon={faNetworkWired} />}
+                />
+                <StatCard
+                    label='Pic PPS sortant'
+                    value={kpiValue(formatPps(peaks.outPps))}
+                    hint='Paquets / s max (TX)'
+                    icon={<FontAwesomeIcon icon={faNetworkWired} />}
+                />
             </div>
 
-            <div className={'grid gap-3 sm:grid-cols-2 lg:grid-cols-4'}>
-                {[
-                    { label: 'Volume entrant (proto)', value: formatBytes(protocols.reduce((s, p) => s + protocolBytes(p, 'in'), 0)) },
-                    { label: 'Volume sortant (proto)', value: formatBytes(protocols.reduce((s, p) => s + protocolBytes(p, 'out'), 0)) },
-                    { label: 'Débit iface RX', value: formatRate(totals.ifaceRx) },
-                    { label: 'Débit iface TX', value: formatRate(totals.ifaceTx) },
-                ].map((card) => (
-                    <div
-                        key={card.label}
-                        className={'rounded-lg border p-4'}
-                        style={{
-                            borderColor: CloudUI.border,
-                            background: CloudUI.surface,
-                            boxShadow: cloudPanelStyle.boxShadow as string,
-                        }}
-                    >
-                        <p className={'text-[11px] font-semibold uppercase tracking-wide'} style={{ color: CloudUI.textMuted }}>
-                            {card.label}
-                        </p>
-                        <p className={'mt-2 text-xl font-bold tabular-nums'} style={{ color: CloudUI.accent }}>
-                            {loading && !traffic ? '…' : card.value}
-                        </p>
-                    </div>
-                ))}
+            <div css={tw`grid gap-3 sm:grid-cols-2`}>
+                <StatCard
+                    label='Volume ports entrant'
+                    value={kpiValue(formatBytes(volumes.in))}
+                    hint='Compteurs protocoles firewall (IN)'
+                    icon={<FontAwesomeIcon icon={faChartPie} />}
+                />
+                <StatCard
+                    label='Volume ports sortant'
+                    value={kpiValue(formatBytes(volumes.out))}
+                    hint='Compteurs protocoles firewall (OUT)'
+                    icon={<FontAwesomeIcon icon={faChartPie} />}
+                />
             </div>
 
             {error ? (
-                <div
-                    className={'flex items-start gap-2 rounded-lg border px-3 py-2 text-sm'}
-                    style={{ borderColor: 'rgba(239,68,68,0.35)', background: 'rgba(239,68,68,0.12)', color: CloudUI.danger }}
-                >
-                    <FontAwesomeIcon icon={faExclamationTriangle} className={'mt-0.5'} />
-                    <span>{error}</span>
-                </div>
+                <Alert type={'danger'}>{error}</Alert>
             ) : null}
 
             <Panel padded>
-                <div className={'mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'}>
-                    <div>
-                        <h3 className={'text-sm font-semibold'} style={{ color: CloudUI.text }}>
-                            Répartition du trafic
-                        </h3>
-                        <p className={'mt-1 text-xs'} style={{ color: CloudUI.textMuted }}>
-                            Volume sur la période : {formatBytes(volumeBase)}
-                        </p>
-                    </div>
-                    <div className={'flex flex-wrap gap-2'} style={{ ['--border' as any]: CloudUI.border, ['--muted' as any]: CloudUI.textMuted, ['--hover' as any]: CloudUI.surfaceHover, ['--text' as any]: CloudUI.text }}>
-                        <button type={'button'} className={chip(direction === 'in')} style={direction === 'in' ? { background: CloudUI.accent } : undefined} onClick={() => setDirection('in')}>
-                            Entrant
-                        </button>
-                        <button type={'button'} className={chip(direction === 'out')} style={direction === 'out' ? { background: CloudUI.accent } : undefined} onClick={() => setDirection('out')}>
-                            Sortant
-                        </button>
-                        <span className={'mx-1 h-6 w-px bg-current opacity-20'} />
-                        <button type={'button'} className={chip(kind === 'protocols')} style={kind === 'protocols' ? { background: CloudUI.accent } : undefined} onClick={() => setKind('protocols')}>
-                            Protocoles
-                        </button>
-                        <button type={'button'} className={chip(kind === 'ports')} style={kind === 'ports' ? { background: CloudUI.accent } : undefined} onClick={() => setKind('ports')}>
-                            Ports
-                        </button>
-                        <button type={'button'} className={chip(kind === 'peers')} style={kind === 'peers' ? { background: CloudUI.accent } : undefined} onClick={() => setKind('peers')}>
-                            Pairs IP
-                        </button>
-                    </div>
-                </div>
+                <PanelHeader
+                    title='Analyse du trafic'
+                    description={
+                        <>
+                            Trafic applicatif pour <span css={tw`font-mono`}>{prefixLabel}</span>
+                            {traffic?.interface?.name ? (
+                                <>
+                                    {' '}
+                                    · iface <span css={tw`font-mono`}>{traffic.interface.name}</span>
+                                </>
+                            ) : null}
+                        </>
+                    }
+                    actions={
+                        <>
+                            <SelectField value={range} onChange={(v) => setRange(v as RangeKey)}>
+                                {RANGES.map((r) => (
+                                    <option key={r.id} value={r.id}>
+                                        {r.label}
+                                    </option>
+                                ))}
+                            </SelectField>
+                            <GhostButton onClick={() => void load()} disabled={loading} title='Actualiser'>
+                                <FontAwesomeIcon icon={faSyncAlt} spin={loading} /> Actualiser
+                            </GhostButton>
+                        </>
+                    }
+                />
 
-                {loading && !traffic ? (
-                    <div className={'flex h-40 items-center justify-center text-sm'} style={{ color: CloudUI.textMuted }}>
+                {loading && !filteredHistory.length ? (
+                    <div css={tw`flex h-48 items-center justify-center text-sm`} style={{ color: CloudUI.textMuted }}>
+                        Chargement…
+                    </div>
+                ) : !filteredHistory.length ? (
+                    <EmptyState
+                        icon={<FontAwesomeIcon icon={faChartPie} />}
+                        title='Aucune donnée sur la période'
+                        description='Le firewall du VPS n’a pas encore d’historique de trafic à afficher.'
+                    />
+                ) : (
+                    <div css={tw`grid gap-5 lg:grid-cols-2`}>
+                        <div>
+                            <p css={tw`mb-2 text-sm font-semibold`} style={{ color: CloudUI.text }}>
+                                Débit (BPS)
+                            </p>
+                            <div css={tw`h-52 w-full`}>
+                                <Line data={bpsChart} options={bpsOptions} />
+                            </div>
+                        </div>
+                        <div>
+                            <p css={tw`mb-2 text-sm font-semibold`} style={{ color: CloudUI.text }}>
+                                Paquets (PPS)
+                            </p>
+                            <div css={tw`h-52 w-full`}>
+                                <Line data={ppsChart} options={ppsOptions} />
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                <MetaLine css={tw`mt-4`}>
+                    {lastSample
+                        ? `Dernier échantillon : ${new Date((lastSample.t || 0) * 1000).toLocaleString('fr-FR')}`
+                        : fetchedAt
+                          ? `Mis à jour ${new Date(fetchedAt).toLocaleTimeString('fr-FR')}`
+                          : 'Période d’analyse filtrée côté client (l’API Digi n’accepte pas de plage).'}
+                </MetaLine>
+            </Panel>
+
+            <Panel padded>
+                <PanelHeader
+                    title='Répartition du trafic'
+                    description={`Volume sur la période : ${formatBytes(volumeBase)}`}
+                    actions={
+                        <div css={tw`flex w-full flex-col gap-2 sm:w-auto`}>
+                            <SegmentedControl
+                                value={direction}
+                                onChange={setDirection}
+                                options={[
+                                    { id: 'in', label: 'Entrant' },
+                                    { id: 'out', label: 'Sortant' },
+                                ]}
+                            />
+                            <SegmentedControl
+                                value={kind}
+                                onChange={setKind}
+                                options={[
+                                    { id: 'ports', label: 'Ports' },
+                                    { id: 'peers', label: 'Pairs IP' },
+                                    { id: 'protocols', label: 'Protocoles' },
+                                    { id: 'countries', label: 'Pays' },
+                                ]}
+                            />
+                        </div>
+                    }
+                />
+
+                {kind === 'countries' ? (
+                    <EmptyState
+                        icon={<FontAwesomeIcon icon={faGlobe} />}
+                        title='Aucune répartition pays disponible'
+                        description='L’API Digi n’expose pas de géolocalisation du trafic. Ports, pairs IP et protocoles restent disponibles.'
+                    />
+                ) : loading && !traffic ? (
+                    <div css={tw`flex h-40 items-center justify-center text-sm`} style={{ color: CloudUI.textMuted }}>
                         Chargement…
                     </div>
                 ) : breakdown.length === 0 ? (
                     <EmptyState
                         icon={<FontAwesomeIcon icon={faChartPie} />}
-                        title="Aucune donnée sur la période"
-                        description="Aucun volume significatif pour ce filtre. Actualisez ou changez le type de répartition."
+                        title='Aucune donnée sur la période'
+                        description={emptyCopy}
                     />
                 ) : (
-                    <div className={'space-y-2'}>
+                    <div css={tw`space-y-2`}>
                         {breakdown.map((item) => {
                             const pct = volumeBase > 0 ? Math.min(100, (item.value / volumeBase) * 100) : 0;
                             return (
-                                <div key={item.key} className={'rounded-md border px-3 py-2.5'} style={{ borderColor: CloudUI.borderSubtle, background: CloudUI.bg }}>
-                                    <div className={'mb-1.5 flex items-center justify-between gap-3 text-sm'}>
-                                        <div className={'min-w-0'}>
-                                            <p className={'truncate font-semibold'} style={{ color: CloudUI.text }}>
+                                <div
+                                    key={item.key}
+                                    css={tw`rounded-md border px-3 py-2.5`}
+                                    style={{ borderColor: CloudUI.borderSubtle, background: CloudUI.bg }}
+                                >
+                                    <div css={tw`mb-1.5 flex items-center justify-between gap-3 text-sm`}>
+                                        <div css={tw`min-w-0`}>
+                                            <p css={tw`truncate font-semibold`} style={{ color: CloudUI.text }}>
                                                 {item.label}
                                             </p>
                                             {item.sub ? (
-                                                <p className={'truncate text-xs'} style={{ color: CloudUI.textMuted }}>
+                                                <p css={tw`truncate text-xs`} style={{ color: CloudUI.textMuted }}>
                                                     {item.sub}
+                                                    {item.packets > 0
+                                                        ? ` · ${item.packets.toLocaleString('fr-FR')} paquets`
+                                                        : ''}
                                                 </p>
                                             ) : null}
                                         </div>
-                                        <div className={'flex-shrink-0 text-right'}>
-                                            <p className={'font-semibold tabular-nums'} style={{ color: CloudUI.text }}>
+                                        <div css={tw`flex-shrink-0 text-right`}>
+                                            <p css={tw`font-semibold tabular-nums`} style={{ color: CloudUI.text }}>
                                                 {formatBytes(item.value)}
                                             </p>
-                                            <p className={'text-xs tabular-nums'} style={{ color: CloudUI.textMuted }}>
+                                            <p css={tw`text-xs tabular-nums`} style={{ color: CloudUI.textMuted }}>
                                                 {pct.toFixed(1)} %
                                             </p>
                                         </div>
                                     </div>
-                                    <div className={'h-1.5 overflow-hidden rounded-full'} style={{ background: CloudUI.borderSubtle }}>
-                                        <div className={'h-full rounded-full'} style={{ width: `${pct}%`, background: CloudUI.accent }} />
+                                    <div css={tw`h-1.5 overflow-hidden rounded-full`} style={{ background: CloudUI.borderSubtle }}>
+                                        <div css={tw`h-full rounded-full`} style={{ width: `${pct}%`, background: CloudUI.accent }} />
                                     </div>
                                 </div>
                             );
                         })}
                     </div>
                 )}
+
+                {kind !== 'countries' && kind !== 'protocols' ? (
+                    <MetaLine css={tw`mt-4`}>
+                        Les compteurs de règles firewall Digi ne distinguent pas le sens : ports et pairs sont globaux.
+                        Le filtre Entrant / Sortant s’applique aux protocoles et aux graphiques.
+                    </MetaLine>
+                ) : null}
             </Panel>
         </div>
     );
 };
-
-export default NetworkIpAnalysisTab;

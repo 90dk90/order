@@ -16,7 +16,7 @@ export default () => {
             <div css={tw`min-h-[60vh] w-full`}>
                 <Switch location={location}>
                     <Route path={'/network/ips'} exact component={NetworkIpsContainer} />
-                    <Route path={'/network/ips/:ipId'} exact component={NetworkIpDetailContainer} />
+                    <Route path={'/network/ips/:ipId'} component={NetworkIpDetailContainer} />
                     <Route path={'/network/ddos'} exact component={NetworkDdosContainer} />
                     <Route path={'/network'} exact>
                         <Redirect to="/network/ips" />
