@@ -7,7 +7,7 @@
 # Images: Hetzner S3 only (public HTTP or private rclone). No Lumen API.
 set -euo pipefail
 
-VERSION="0.6.4"
+VERSION="0.6.5"
 HOME_DIR="${HOME_DIR:-/home/container}"
 CACHE_DIR="${CACHE_DIR:-/opt/1vps/lumenvm-net/vm-images}"
 WORKDIR="${HOME_DIR}"
@@ -19,15 +19,19 @@ err()  { printf ' \033[31m●\033[37m %s\033[0m\n' "$*" >&2; }
 step() { info "[$1] $2"; }
 
 banner() {
-  printf '\033[34m'
+  printf '\033[36m'
   cat <<'EOF'
-   __                      _____ _____
-  |  |   _ _ _____ ___ ___|  |  |     |
-  |  |__| | |     | -_|   |  |  | | | |
-  |_____|___|_|_|_|___|_|_|\___/|_|_|_|
-         1vps-vm (self-hosted)
+
+   ██╗ ██╗   ██╗██████╗ ███████╗
+  ███║ ██║   ██║██╔══██╗██╔════╝
+  ╚██║ ██║   ██║██████╔╝███████╗
+   ██║ ╚██╗ ██╔╝██╔═══╝ ╚════██║
+   ██║  ╚████╔╝ ██║     ███████║
+   ╚═╝   ╚═══╝  ╚═╝     ╚══════╝
+           self-hosted kvm
+
 EOF
-  printf '\033[0m\n'
+  printf '\033[0m'
 }
 
 need_cmd() {
