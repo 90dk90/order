@@ -26,14 +26,21 @@ import {
     EmptyState,
     GhostButton,
     GhostLink,
+    MobileCard,
+    MobileMetaGrid,
     NetworkHeader,
     NetworkPage,
     Panel,
     PrimaryButton,
     SearchField,
+    SegmentedControl,
+    StatCard,
     Td,
+    Toolbar,
     copyText,
+    durationMin,
     formatWhen,
+    severityOfBps,
 } from '@/components/network/NetworkUi';
 
 type PrefixTab = 'general' | 'stats' | 'analysis' | 'attacks';
@@ -203,7 +210,10 @@ export default () => {
         revalidateOnFocus: true,
     });
     const { data: modes } = useSWR<DdosFilterMode[]>('network-ddos-modes', getDdosFilterModes);
-    const { data: incidents } = useSWR<DdosIncident[]>('network-ddos-incidents', getDdosIncidents);
+    const { data: incidents } = useSWR<DdosIncident[]>('network-ddos-incidents', getDdosIncidents, {
+        refreshInterval: 15000,
+        revalidateOnFocus: true,
+    });
 
     const [editOpen, setEditOpen] = useState(false);
     const [hostname, setHostname] = useState('');
@@ -211,6 +221,8 @@ export default () => {
     const [copied, setCopied] = useState<string | null>(null);
     const [ptrFilter, setPtrFilter] = useState('');
     const [selected, setSelected] = useState(false);
+    const [attackFilter, setAttackFilter] = useState<'all' | 'active'>('all');
+    const [attackQuery, setAttackQuery] = useState('');
 
     const basePath = `/network/ips/${encodeURIComponent(decoded)}`;
     const tab: PrefixTab = location.pathname.endsWith('/stats')
@@ -271,6 +283,43 @@ export default () => {
         () => relatedIncidents.filter((i) => !i.incident_stop).length,
         [relatedIncidents]
     );
+
+    const peakAttackBps = useMemo(
+        () => relatedIncidents.reduce((m, i) => Math.max(m, Number(i.max_bps) || 0), 0),
+        [relatedIncidents]
+    );
+
+    const filteredAttacks = useMemo(() => {
+        const q = attackQuery.trim().toLowerCase();
+        return relatedIncidents.filter((i) => {
+            if (attackFilter === 'active' && i.incident_stop) return false;
+            if (!q) return true;
+            const hay = [
+                String(i.incident_id || ''),
+                i.ip || '',
+                i.attack_type || '',
+                i.protocol || '',
+                i.diversion_reason || '',
+                i.incident_start || '',
+                i.incident_stop || '',
+            ]
+                .join(' ')
+                .toLowerCase();
+            return hay.includes(q);
+        });
+    }, [relatedIncidents, attackFilter, attackQuery]);
+
+    const severityTone = (bps?: number): 'ok' | 'warn' | 'danger' => {
+        const s = severityOfBps(bps);
+        return s === 'danger' ? 'danger' : s === 'warn' ? 'warn' : 'ok';
+    };
+
+    const severityLabel = (bps?: number) => {
+        const t = severityTone(bps);
+        if (t === 'danger') return 'Élevée';
+        if (t === 'warn') return 'Moyenne';
+        return 'Faible';
+    };
 
     if (!ips && !error) {
         return (
@@ -781,113 +830,234 @@ export default () => {
             {tab === 'analysis' ? <NetworkIpAnalysisTab row={row} prefixLabel={label} /> : null}
 
             {tab === 'attacks' ? (
-                <Panel padded={false}>
-                    <div
-                        css={tw`px-4 sm:px-6 py-4 sm:py-5 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3`}
-                        style={{ borderBottom: `1px solid ${HMS.cardBorder}` }}
-                    >
-                        <div>
-                            <h2 css={tw`m-0 text-base font-semibold tracking-tight`} style={{ color: CloudUI.text }}>
-                                Historique des attaques
-                            </h2>
-                            <p css={tw`m-0 mt-1 text-sm`} style={{ color: CloudUI.textMuted }}>
-                                Événements DDoS enregistrés pour {label}
-                            </p>
-                        </div>
-                        <GhostLink compact to={`/network/ddos?ip=${encodeURIComponent(row.ip)}`}>
-                            Voir toutes
-                            <Icon.ArrowRight size={12} />
-                        </GhostLink>
-                    </div>
-                    {relatedIncidents.length === 0 ? (
-                        <EmptyState
-                            icon={<Icon.Shield size={36} />}
-                            title="Aucune attaque"
-                            description="Aucune attaque enregistrée pour cette période."
+                <div css={tw`space-y-5`}>
+                    <div css={tw`grid gap-3 sm:grid-cols-3`}>
+                        <StatCard
+                            label="Attaques listées"
+                            value={String(relatedIncidents.length)}
+                            hint="Événements pour ce préfixe"
+                            icon={<Icon.Shield size={16} />}
                         />
-                    ) : (
-                        <>
-                            <DataTable
-                                headers={[
-                                    { key: 'start', label: 'Début', width: '22%' },
-                                    { key: 'end', label: 'Fin', width: '22%' },
-                                    { key: 'type', label: 'Type', width: '22%' },
-                                    { key: 'bps', label: 'Débit', width: '18%' },
-                                    { key: 'act', label: '', width: '16%', align: 'right' },
-                                ]}
-                            >
-                                {relatedIncidents.map((inc) => (
-                                    <HoverRow key={inc.incident_id}>
-                                        <Td>
-                                            <span css={tw`text-sm`} style={{ color: CloudUI.textSecondary }}>
-                                                {formatWhen(inc.incident_start)}
-                                            </span>
-                                        </Td>
-                                        <Td>
-                                            <span css={tw`text-sm`} style={{ color: CloudUI.textSecondary }}>
-                                                {inc.incident_stop ? formatWhen(inc.incident_stop) : '—'}
-                                            </span>
-                                        </Td>
-                                        <Td>
-                                            {!inc.incident_stop ? (
-                                                <Badge tone="danger">En cours</Badge>
-                                            ) : (
-                                                <Badge tone="warn">
-                                                    {inc.attack_type || inc.diversion_reason || 'Attaque'}
-                                                </Badge>
-                                            )}
-                                        </Td>
-                                        <Td>
-                                            <span css={tw`text-sm tabular-nums`} style={{ color: CloudUI.textSecondary }}>
-                                                {inc.max_bps_formattet || '—'}
-                                            </span>
-                                        </Td>
-                                        <Td align="right">
-                                            <GhostLink
-                                                compact
-                                                to={`/network/ddos?ip=${encodeURIComponent(row.ip)}&incident=${encodeURIComponent(inc.incident_id)}`}
-                                            >
-                                                Voir
-                                            </GhostLink>
-                                        </Td>
-                                    </HoverRow>
-                                ))}
-                            </DataTable>
-                            <div css={tw`lg:hidden px-4 py-4 space-y-3`}>
-                                {relatedIncidents.map((inc) => (
-                                    <div
-                                        key={inc.incident_id}
-                                        css={tw`rounded-xl p-4 space-y-2`}
-                                        style={{ border: `1px solid ${HMS.cardBorder}` }}
-                                    >
-                                        <div css={tw`flex items-center justify-between gap-2`}>
-                                            {!inc.incident_stop ? (
-                                                <Badge tone="danger">En cours</Badge>
-                                            ) : (
-                                                <Badge tone="warn">
-                                                    {inc.attack_type || inc.diversion_reason || 'Attaque'}
-                                                </Badge>
-                                            )}
-                                            <span css={tw`text-sm tabular-nums`} style={{ color: CloudUI.textSecondary }}>
-                                                {inc.max_bps_formattet || '—'}
-                                            </span>
-                                        </div>
-                                        <p css={tw`m-0 text-sm`} style={{ color: CloudUI.textMuted }}>
-                                            {formatWhen(inc.incident_start)}
-                                            {inc.incident_stop ? ` → ${formatWhen(inc.incident_stop)}` : ''}
-                                        </p>
-                                        <GhostLink
-                                            fullWidth
-                                            to={`/network/ddos?ip=${encodeURIComponent(row.ip)}&incident=${encodeURIComponent(inc.incident_id)}`}
-                                        >
-                                            Voir l&apos;attaque
-                                        </GhostLink>
-                                    </div>
-                                ))}
+                        <StatCard
+                            label="En cours"
+                            value={String(activeIncidents)}
+                            hint="Mitigation active"
+                            tone={activeIncidents > 0 ? 'danger' : 'ok'}
+                            icon={<Icon.AlertTriangle size={16} />}
+                        />
+                        <StatCard
+                            label="Pic observé"
+                            value={
+                                peakAttackBps > 0
+                                    ? relatedIncidents.find((i) => Number(i.max_bps) === peakAttackBps)
+                                          ?.max_bps_formattet || `${(peakAttackBps / 1e9).toFixed(2)} Gbps`
+                                    : '—'
+                            }
+                            hint="Débit max enregistré"
+                            icon={<Icon.Activity size={16} />}
+                        />
+                    </div>
+
+                    <Panel padded>
+                        <div
+                            css={tw`flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 mb-4 pb-4`}
+                            style={{ borderBottom: `1px solid ${HMS.cardBorder}` }}
+                        >
+                            <div>
+                                <h2 css={tw`m-0 text-base font-semibold tracking-tight`} style={{ color: CloudUI.text }}>
+                                    Historique des attaques
+                                </h2>
+                                <p css={tw`m-0 mt-1 text-sm`} style={{ color: CloudUI.textMuted }}>
+                                    Événements DDoS enregistrés pour {label}
+                                </p>
                             </div>
-                        </>
-                    )}
-                </Panel>
+                            <div css={tw`flex flex-wrap items-center gap-2`}>
+                                <Badge tone="accent">
+                                    <span
+                                        css={tw`inline-block h-1.5 w-1.5 rounded-full`}
+                                        style={{ background: CloudUI.accent }}
+                                    />
+                                    Auto 15 s
+                                </Badge>
+                                <GhostLink compact to={`/network/ddos?ip=${encodeURIComponent(row.ip)}`}>
+                                    Voir toutes
+                                    <Icon.ArrowRight size={12} />
+                                </GhostLink>
+                            </div>
+                        </div>
+
+                        <Toolbar>
+                            <SegmentedControl
+                                value={attackFilter}
+                                onChange={setAttackFilter}
+                                options={[
+                                    { id: 'all', label: 'Toutes' },
+                                    { id: 'active', label: 'En cours' },
+                                ]}
+                            />
+                            <SearchField
+                                value={attackQuery}
+                                onChange={setAttackQuery}
+                                placeholder="Rechercher (ID, type, dates…)"
+                            />
+                        </Toolbar>
+
+                        {filteredAttacks.length === 0 ? (
+                            <EmptyState
+                                icon={<Icon.Shield size={36} />}
+                                title="Aucune attaque"
+                                description={
+                                    attackFilter === 'active'
+                                        ? 'Aucune attaque en cours pour ce préfixe.'
+                                        : 'Aucune attaque enregistrée pour cette période.'
+                                }
+                            />
+                        ) : (
+                            <>
+                                <div css={tw`hidden md:block mt-4`}>
+                                    <DataTable
+                                        headers={[
+                                            { key: 'start', label: 'Début', width: '16%' },
+                                            { key: 'end', label: 'Fin', width: '16%' },
+                                            { key: 'dur', label: 'Durée', width: '10%' },
+                                            { key: 'bps', label: 'Débit', width: '14%' },
+                                            { key: 'pps', label: 'PPS', width: '12%' },
+                                            { key: 'sev', label: 'Sévérité', width: '12%' },
+                                            { key: 'status', label: 'Statut', width: '12%' },
+                                            { key: 'act', label: '', width: '8%', align: 'right' },
+                                        ]}
+                                    >
+                                        {filteredAttacks.map((inc) => {
+                                            const active = !inc.incident_stop;
+                                            const bps = Number(inc.max_bps) || 0;
+                                            const mins = durationMin(inc.incident_start, inc.incident_stop);
+                                            return (
+                                                <HoverRow key={inc.incident_id}>
+                                                    <Td>
+                                                        <span css={tw`text-sm`} style={{ color: CloudUI.textSecondary }}>
+                                                            {formatWhen(inc.incident_start)}
+                                                        </span>
+                                                    </Td>
+                                                    <Td>
+                                                        <span css={tw`text-sm`} style={{ color: CloudUI.textSecondary }}>
+                                                            {active ? '—' : formatWhen(inc.incident_stop)}
+                                                        </span>
+                                                    </Td>
+                                                    <Td>
+                                                        <span css={tw`text-sm tabular-nums`} style={{ color: CloudUI.textMuted }}>
+                                                            {active ? '—' : mins != null ? `${mins} min` : '—'}
+                                                        </span>
+                                                    </Td>
+                                                    <Td>
+                                                        <span
+                                                            css={tw`text-sm tabular-nums font-medium`}
+                                                            style={{
+                                                                color:
+                                                                    severityTone(bps) === 'danger'
+                                                                        ? CloudUI.danger
+                                                                        : severityTone(bps) === 'warn'
+                                                                          ? CloudUI.warning
+                                                                          : CloudUI.textSecondary,
+                                                            }}
+                                                        >
+                                                            {inc.max_bps_formattet ||
+                                                                (bps ? `${(bps / 1e9).toFixed(2)} Gbps` : '—')}
+                                                        </span>
+                                                    </Td>
+                                                    <Td>
+                                                        <span css={tw`text-sm tabular-nums`} style={{ color: CloudUI.textSecondary }}>
+                                                            {inc.max_pps_formattet ||
+                                                                (inc.max_pps != null
+                                                                    ? Number(inc.max_pps).toLocaleString('fr-FR')
+                                                                    : '—')}
+                                                        </span>
+                                                    </Td>
+                                                    <Td>
+                                                        <Badge tone={severityTone(bps)}>{severityLabel(bps)}</Badge>
+                                                    </Td>
+                                                    <Td>
+                                                        <Badge tone={active ? 'danger' : 'neutral'}>
+                                                            {active ? 'En cours' : 'Terminée'}
+                                                        </Badge>
+                                                    </Td>
+                                                    <Td align="right">
+                                                        <GhostLink
+                                                            compact
+                                                            to={`/network/ddos?ip=${encodeURIComponent(row.ip)}&incident=${encodeURIComponent(inc.incident_id)}`}
+                                                        >
+                                                            Voir
+                                                        </GhostLink>
+                                                    </Td>
+                                                </HoverRow>
+                                            );
+                                        })}
+                                    </DataTable>
+                                </div>
+
+                                <div css={tw`md:hidden mt-4 space-y-3`}>
+                                    {filteredAttacks.map((inc) => {
+                                        const active = !inc.incident_stop;
+                                        const bps = Number(inc.max_bps) || 0;
+                                        const mins = durationMin(inc.incident_start, inc.incident_stop);
+                                        return (
+                                            <MobileCard key={inc.incident_id}>
+                                                <div css={tw`flex items-start justify-between gap-3 mb-3`}>
+                                                    <div>
+                                                        <div css={tw`text-sm font-semibold`} style={{ color: CloudUI.text }}>
+                                                            {formatWhen(inc.incident_start)}
+                                                        </div>
+                                                        <p css={tw`m-0 mt-1 text-xs`} style={{ color: CloudUI.textMuted }}>
+                                                            {inc.attack_type || inc.protocol || 'DDoS'}
+                                                        </p>
+                                                    </div>
+                                                    <Badge tone={active ? 'danger' : 'neutral'}>
+                                                        {active ? 'En cours' : 'Terminée'}
+                                                    </Badge>
+                                                </div>
+                                                <MobileMetaGrid
+                                                    items={[
+                                                        {
+                                                            label: 'Débit',
+                                                            value:
+                                                                inc.max_bps_formattet ||
+                                                                (bps ? `${(bps / 1e9).toFixed(2)} Gbps` : '—'),
+                                                        },
+                                                        {
+                                                            label: 'PPS',
+                                                            value:
+                                                                inc.max_pps_formattet ||
+                                                                (inc.max_pps != null
+                                                                    ? Number(inc.max_pps).toLocaleString('fr-FR')
+                                                                    : '—'),
+                                                        },
+                                                        {
+                                                            label: 'Durée',
+                                                            value: active ? '—' : mins != null ? `${mins} min` : '—',
+                                                        },
+                                                        { label: 'Sévérité', value: severityLabel(bps) },
+                                                    ]}
+                                                />
+                                                <div css={tw`mt-3`}>
+                                                    <GhostLink
+                                                        fullWidth
+                                                        to={`/network/ddos?ip=${encodeURIComponent(row.ip)}&incident=${encodeURIComponent(inc.incident_id)}`}
+                                                    >
+                                                        Voir l&apos;attaque
+                                                    </GhostLink>
+                                                </div>
+                                            </MobileCard>
+                                        );
+                                    })}
+                                </div>
+
+                                <p css={tw`m-0 mt-4 text-xs`} style={{ color: CloudUI.textMuted }}>
+                                    {filteredAttacks.length} affichée(s) sur {relatedIncidents.length} · actualisation
+                                    auto 15 s
+                                </p>
+                            </>
+                        )}
+                    </Panel>
+                </div>
             ) : null}
 
             <HmsModal visible={editOpen} onClose={() => setEditOpen(false)} maxWidth="28rem">

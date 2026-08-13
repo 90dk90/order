@@ -16,20 +16,32 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faArrowDown, faArrowUp, faTachometerAlt, faSyncAlt } from '@fortawesome/free-solid-svg-icons';
 import getFirewallTraffic from '@/api/server/firewall/getFirewallTraffic';
 import type { FirewallTraffic } from '@/api/server/firewall/getFirewallTraffic';
-import { CloudUI, cloudPanelStyle } from '@/components/hms/cloudUi';
-import { EmptyState, Panel } from '@/components/network/NetworkUi';
+import { CloudUI } from '@/components/hms/cloudUi';
+import { HMS } from '@/components/hms/hmsTheme';
+import {
+    Badge,
+    EmptyState,
+    GhostButton,
+    MetaLine,
+    Panel,
+    PanelHeader,
+    SegmentedControl,
+    StatCard,
+} from '@/components/network/NetworkUi';
 import type { NetworkIpRow } from '@/api/network';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend, Filler);
 
 type RangeKey = '1h' | '24h' | '7d' | '30d' | '6m';
 
-const RANGES: { key: RangeKey; label: string; seconds: number }[] = [
-    { key: '1h', label: '1 h', seconds: 3600 },
-    { key: '24h', label: '24 h', seconds: 86400 },
-    { key: '7d', label: '7 j', seconds: 7 * 86400 },
-    { key: '30d', label: '30 j', seconds: 30 * 86400 },
-    { key: '6m', label: '6 mois', seconds: 180 * 86400 },
+const REFRESH_MS = 15000;
+
+const RANGES: { id: RangeKey; label: string; seconds: number }[] = [
+    { id: '1h', label: '1 h', seconds: 3600 },
+    { id: '24h', label: '24 h', seconds: 86400 },
+    { id: '7d', label: '7 j', seconds: 7 * 86400 },
+    { id: '30d', label: '30 j', seconds: 30 * 86400 },
+    { id: '6m', label: '6 mois', seconds: 180 * 86400 },
 ];
 
 function formatMbps(bps: number): string {
@@ -65,38 +77,54 @@ export default ({ row, prefixLabel }: Props) => {
     const uuid = row.service?.uuid || null;
     const [range, setRange] = useState<RangeKey>('24h');
     const [loading, setLoading] = useState(false);
+    const [refreshing, setRefreshing] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [traffic, setTraffic] = useState<FirewallTraffic | null>(null);
     const [fetchedAt, setFetchedAt] = useState<number | null>(null);
 
-    const load = useCallback(async () => {
-        if (!uuid) {
-            setTraffic(null);
-            setError(null);
-            return;
-        }
-        setLoading(true);
-        setError(null);
-        try {
-            const data = await getFirewallTraffic(uuid);
-            setTraffic(data);
-            setFetchedAt(Date.now());
-        } catch (e: any) {
-            setTraffic(null);
-            setError(e?.message || 'Impossible de récupérer les statistiques.');
-        } finally {
-            setLoading(false);
-        }
-    }, [uuid]);
+    const load = useCallback(
+        async (opts?: { silent?: boolean }) => {
+            if (!uuid) {
+                setTraffic(null);
+                setError(null);
+                return;
+            }
+            const silent = Boolean(opts?.silent);
+            if (silent) setRefreshing(true);
+            else setLoading(true);
+            if (!silent) setError(null);
+            try {
+                const data = await getFirewallTraffic(uuid);
+                setTraffic(data);
+                setFetchedAt(Date.now());
+                setError(null);
+            } catch (e: any) {
+                if (!silent) {
+                    setTraffic(null);
+                    setError(e?.message || 'Impossible de récupérer les statistiques.');
+                }
+            } finally {
+                setLoading(false);
+                setRefreshing(false);
+            }
+        },
+        [uuid]
+    );
 
     useEffect(() => {
         void load();
     }, [load]);
 
+    useEffect(() => {
+        if (!uuid) return undefined;
+        const id = window.setInterval(() => void load({ silent: true }), REFRESH_MS);
+        return () => window.clearInterval(id);
+    }, [uuid, load]);
+
     const filteredHistory = useMemo(() => {
         const history = traffic?.history || [];
         if (!history.length) return [];
-        const seconds = RANGES.find((r) => r.key === range)?.seconds ?? 86400;
+        const seconds = RANGES.find((r) => r.id === range)?.seconds ?? 86400;
         const cutoff = Math.floor(Date.now() / 1000) - seconds;
         const sliced = history.filter((h) => (h.t || 0) >= cutoff);
         return sliced.length ? sliced : history.slice(-Math.min(history.length, 120));
@@ -135,22 +163,22 @@ export default ({ row, prefixLabel }: Props) => {
             labels,
             datasets: [
                 {
-                    label: 'Trafic entrant (Mbps)',
+                    label: 'Entrant',
                     data: filteredHistory.map((h) => Number(((h.rx_bps || 0) / 1000000).toFixed(3))),
                     borderColor: '#10b981',
-                    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+                    backgroundColor: 'rgba(16, 185, 129, 0.14)',
                     fill: true,
-                    tension: 0.3,
+                    tension: 0.35,
                     pointRadius: 0,
                     borderWidth: 2,
                 },
                 {
-                    label: 'Trafic sortant (Mbps)',
+                    label: 'Sortant',
                     data: filteredHistory.map((h) => Number(((h.tx_bps || 0) / 1000000).toFixed(3))),
                     borderColor: '#34d399',
                     backgroundColor: 'rgba(52, 211, 153, 0.08)',
                     fill: true,
-                    tension: 0.3,
+                    tension: 0.35,
                     pointRadius: 0,
                     borderWidth: 2,
                 },
@@ -162,14 +190,21 @@ export default ({ row, prefixLabel }: Props) => {
         () => ({
             responsive: true,
             maintainAspectRatio: false,
+            animation: false,
             interaction: { mode: 'index', intersect: false },
             plugins: {
                 legend: {
                     display: true,
+                    position: 'top',
+                    align: 'end',
                     labels: {
                         color: CloudUI.textSecondary,
-                        boxWidth: 10,
+                        boxWidth: 8,
+                        boxHeight: 8,
+                        usePointStyle: true,
+                        pointStyle: 'circle',
                         font: { size: 11, family: CloudUI.font },
+                        padding: 16,
                     },
                 },
                 tooltip: {
@@ -186,7 +221,8 @@ export default ({ row, prefixLabel }: Props) => {
             scales: {
                 x: {
                     ticks: { color: CloudUI.textMuted, maxTicksLimit: 8, font: { size: 10 } },
-                    grid: { color: 'rgba(148,163,184,0.12)' },
+                    grid: { display: false },
+                    border: { color: 'rgba(148,163,184,0.18)' },
                 },
                 y: {
                     beginAtZero: true,
@@ -195,7 +231,8 @@ export default ({ row, prefixLabel }: Props) => {
                         font: { size: 10 },
                         callback: (v) => `${v}`,
                     },
-                    grid: { color: 'rgba(148,163,184,0.12)' },
+                    grid: { color: 'rgba(148,163,184,0.10)' },
+                    border: { display: false },
                     title: {
                         display: true,
                         text: 'Mbps',
@@ -218,209 +255,137 @@ export default ({ row, prefixLabel }: Props) => {
         );
     }
 
+    const busy = loading && !traffic;
+    const kpi = (v: string) => (busy ? '…' : v);
+
     return (
         <div css={tw`space-y-5`}>
             <div css={tw`grid gap-3 sm:grid-cols-3`}>
-                <KpiCard
-                    icon={faArrowUp}
+                <StatCard
                     label='Conso sortant'
-                    value={loading && !traffic ? null : formatMbps(metrics.latestOut)}
-                    hint={`Pic sortant: ${formatMbps(metrics.peakOut)}`}
+                    value={kpi(formatMbps(metrics.latestOut))}
+                    hint={`Pic : ${formatMbps(metrics.peakOut)}`}
+                    icon={<FontAwesomeIcon icon={faArrowUp} />}
+                    tone='default'
                 />
-                <KpiCard
-                    icon={faArrowDown}
+                <StatCard
                     label='Conso entrant'
-                    value={loading && !traffic ? null : formatMbps(metrics.latestIn)}
-                    hint={`Pic entrant: ${formatMbps(metrics.peakIn)}`}
+                    value={kpi(formatMbps(metrics.latestIn))}
+                    hint={`Pic : ${formatMbps(metrics.peakIn)}`}
+                    icon={<FontAwesomeIcon icon={faArrowDown} />}
                 />
-                <KpiCard
-                    icon={faTachometerAlt}
-                    label='Commit 95e percentile'
-                    value={loading && !traffic ? null : formatMbps(metrics.p95)}
+                <StatCard
+                    label='Commit 95e'
+                    value={kpi(formatMbps(metrics.p95))}
                     hint='Trafic calculé sur 95 % du temps'
+                    icon={<FontAwesomeIcon icon={faTachometerAlt} />}
+                    tone='ok'
                 />
             </div>
 
-            <Panel>
-                <div
-                    css={tw`flex flex-col gap-3 border-b sm:flex-row sm:items-center sm:justify-between`}
-                    style={{ borderColor: CloudUI.border, padding: '0.9rem 1rem' }}
-                >
-                    <div css={tw`min-w-0`}>
-                        <h2 css={tw`text-base font-semibold sm:text-lg`} style={{ color: CloudUI.text }}>
-                            Statistiques réseau
-                        </h2>
-                        <p css={tw`mt-1 text-sm`} style={{ color: CloudUI.textMuted }}>
-                            <span css={tw`font-mono font-medium`} style={{ color: CloudUI.textSecondary }}>
+            <Panel padded>
+                <PanelHeader
+                    title='Statistiques réseau'
+                    description={
+                        <>
+                            Trafic agrégé pour{' '}
+                            <span css={tw`font-mono`} style={{ color: CloudUI.textSecondary }}>
                                 {prefixLabel}
                             </span>
-                            <span css={tw`mx-2`} style={{ color: CloudUI.border }}>
-                                ·
-                            </span>
-                            <span css={tw`font-mono text-xs`}>{row.ip}</span>
-                        </p>
-                    </div>
-                    <div css={tw`flex flex-shrink-0 flex-wrap items-center gap-2`}>
-                        <select
-                            value={range}
-                            onChange={(e) => setRange(e.target.value as RangeKey)}
-                            aria-label='Période des statistiques'
-                            css={tw`h-10 rounded-md border px-3 text-sm font-medium outline-none`}
-                            style={{
-                                background: CloudUI.surface,
-                                borderColor: CloudUI.border,
-                                color: CloudUI.text,
-                                fontFamily: CloudUI.font,
-                            }}
-                        >
-                            {RANGES.map((r) => (
-                                <option key={r.key} value={r.key}>
-                                    {r.label}
-                                </option>
-                            ))}
-                        </select>
-                        <button
-                            type='button'
-                            onClick={() => void load()}
-                            disabled={loading}
-                            title='Actualiser'
-                            css={tw`inline-flex h-10 w-10 items-center justify-center rounded-md border transition disabled:cursor-not-allowed disabled:opacity-50`}
-                            style={{
-                                background: CloudUI.surface,
-                                borderColor: CloudUI.border,
-                                color: CloudUI.textSecondary,
-                            }}
-                        >
-                            <FontAwesomeIcon icon={faSyncAlt} spin={loading} />
-                            <span css={tw`sr-only`}>Actualiser</span>
-                        </button>
-                    </div>
+                        </>
+                    }
+                    actions={
+                        <div css={tw`flex flex-col sm:flex-row sm:items-center gap-2 w-full lg:w-auto`}>
+                            <Badge tone='accent'>
+                                <span
+                                    css={tw`inline-block h-1.5 w-1.5 rounded-full`}
+                                    style={{
+                                        background: CloudUI.accent,
+                                        boxShadow: refreshing ? `0 0 0 4px ${CloudUI.accentMuted}` : 'none',
+                                    }}
+                                />
+                                Auto 15 s
+                            </Badge>
+                            <GhostButton compact onClick={() => void load()} disabled={loading || refreshing} title='Actualiser'>
+                                <FontAwesomeIcon icon={faSyncAlt} spin={loading || refreshing} /> Actualiser
+                            </GhostButton>
+                        </div>
+                    }
+                />
+
+                <div css={tw`mb-4`}>
+                    <SegmentedControl value={range} onChange={setRange} options={RANGES.map((r) => ({ id: r.id, label: r.label }))} />
                 </div>
 
-                <div css={tw`px-4 py-4 sm:px-5`}>
-                    {error ? (
+                {error ? (
+                    <div
+                        css={tw`rounded-xl border px-3 py-2.5 text-sm mb-4`}
+                        style={{
+                            borderColor: 'rgba(239,68,68,0.35)',
+                            background: 'rgba(239,68,68,0.12)',
+                            color: CloudUI.danger,
+                        }}
+                    >
+                        {error}
+                    </div>
+                ) : null}
+
+                {busy ? (
+                    <div css={tw`flex h-64 items-center justify-center gap-2.5 text-sm`} style={{ color: CloudUI.textMuted }}>
+                        <span
+                            css={tw`h-6 w-6 animate-spin rounded-full border-2`}
+                            style={{ borderColor: 'rgba(16,185,129,0.25)', borderTopColor: CloudUI.accent }}
+                            aria-hidden
+                        />
+                        Chargement des statistiques…
+                    </div>
+                ) : !filteredHistory.length ? (
+                    <EmptyState
+                        icon={<FontAwesomeIcon icon={faTachometerAlt} />}
+                        title='Aucune donnée pour cette période'
+                        description='Le firewall du VPS n’a pas encore d’historique de trafic à afficher.'
+                    />
+                ) : (
+                    <>
                         <div
-                            css={tw`rounded-md border px-3 py-2 text-sm`}
-                            style={{
-                                borderColor: 'rgba(239,68,68,0.35)',
-                                background: 'rgba(239,68,68,0.12)',
-                                color: CloudUI.danger,
-                            }}
-                        >
-                            {error}
-                        </div>
-                    ) : loading && !filteredHistory.length ? (
-                        <div
-                            css={tw`flex h-56 items-center justify-center gap-2.5 text-sm`}
+                            css={tw`mb-4 flex flex-wrap gap-x-5 gap-y-2 text-xs`}
                             style={{ color: CloudUI.textMuted }}
                         >
-                            <span
-                                css={tw`h-6 w-6 animate-spin rounded-full border-2`}
-                                style={{
-                                    borderColor: 'rgba(16,185,129,0.25)',
-                                    borderTopColor: CloudUI.accent,
-                                }}
-                                aria-hidden
-                            />
-                            Chargement des statistiques…
+                            <span>
+                                Moy. IN{' '}
+                                <strong style={{ color: CloudUI.textSecondary }}>{formatMbps(metrics.avgIn)}</strong>
+                            </span>
+                            <span>
+                                Moy. OUT{' '}
+                                <strong style={{ color: CloudUI.textSecondary }}>{formatMbps(metrics.avgOut)}</strong>
+                            </span>
+                            <span>
+                                {filteredHistory.length} point{filteredHistory.length > 1 ? 's' : ''}
+                            </span>
+                            {fetchedAt ? (
+                                <span>
+                                    Mis à jour{' '}
+                                    {new Date(fetchedAt).toLocaleTimeString('fr-FR', {
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                        second: '2-digit',
+                                    })}
+                                </span>
+                            ) : null}
                         </div>
-                    ) : !filteredHistory.length ? (
-                        <EmptyState
-                            icon={<FontAwesomeIcon icon={faTachometerAlt} />}
-                            title='Aucune donnée pour cette période'
-                            description='Le firewall du VPS n’a pas encore d’historique de trafic à afficher.'
-                        />
-                    ) : (
-                        <>
-                            <div css={tw`mb-3 flex flex-wrap gap-x-4 gap-y-1 text-xs`} style={{ color: CloudUI.textMuted }}>
-                                <span>
-                                    Moy. IN <strong style={{ color: CloudUI.textSecondary }}>{formatMbps(metrics.avgIn)}</strong>
-                                </span>
-                                <span>
-                                    Moy. OUT{' '}
-                                    <strong style={{ color: CloudUI.textSecondary }}>{formatMbps(metrics.avgOut)}</strong>
-                                </span>
-                                <span>
-                                    {filteredHistory.length} point{filteredHistory.length > 1 ? 's' : ''}
-                                </span>
-                                {fetchedAt ? (
-                                    <span>
-                                        Mis à jour{' '}
-                                        {new Date(fetchedAt).toLocaleTimeString('fr-FR', {
-                                            hour: '2-digit',
-                                            minute: '2-digit',
-                                            second: '2-digit',
-                                        })}
-                                    </span>
-                                ) : null}
-                            </div>
-                            <div css={tw`h-72 w-full`}>
-                                <Line data={chartData} options={chartOptions} />
-                            </div>
-                            <p css={tw`mt-3 text-xs`} style={{ color: CloudUI.textMuted }}>
-                                Source : trafic firewall du VPS lié ({row.service?.name || row.service?.uuid}). Les
-                                plages &gt; 24 h utilisent l’historique disponible côté serveur.
-                            </p>
-                        </>
-                    )}
-                </div>
+                        <div
+                            css={tw`h-80 w-full rounded-xl px-2 pt-2 pb-1`}
+                            style={{ background: 'rgba(255,255,255,0.02)', border: `1px solid ${HMS.cardBorder}` }}
+                        >
+                            <Line data={chartData} options={chartOptions} />
+                        </div>
+                        <MetaLine css={tw`mt-4`}>
+                            Source : trafic firewall du VPS lié ({row.service?.name || row.service?.uuid}). Actualisation
+                            automatique toutes les 15 secondes.
+                        </MetaLine>
+                    </>
+                )}
             </Panel>
         </div>
     );
 };
-
-const KpiCard = ({
-    icon,
-    label,
-    value,
-    hint,
-}: {
-    icon: typeof faArrowUp;
-    label: string;
-    value: string | null;
-    hint: string;
-}) => (
-    <div
-        css={tw`rounded-md border px-4 py-4`}
-        style={{
-            background: CloudUI.surface,
-            borderColor: CloudUI.border,
-            boxShadow: cloudPanelStyle.boxShadow,
-        }}
-    >
-        <div css={tw`flex items-stretch gap-3`}>
-            <span
-                css={tw`flex w-14 flex-shrink-0 items-center justify-center self-stretch rounded-md`}
-                style={{ background: CloudUI.accentMuted, color: CloudUI.accent }}
-            >
-                <FontAwesomeIcon icon={icon} css={tw`text-lg`} />
-            </span>
-            <div css={tw`min-w-0 pl-0.5`}>
-                <p css={tw`text-sm font-medium`} style={{ color: CloudUI.textMuted }}>
-                    {label}
-                </p>
-                <p
-                    css={tw`mt-1.5 text-2xl font-bold tracking-tight tabular-nums`}
-                    style={{ color: CloudUI.accent, fontFamily: CloudUI.fontMono }}
-                >
-                    {value === null ? (
-                        <span css={tw`inline-flex h-8 w-8 items-center justify-center`} aria-hidden>
-                            <span
-                                css={tw`h-5 w-5 animate-spin rounded-full border-2`}
-                                style={{
-                                    borderColor: 'rgba(16,185,129,0.25)',
-                                    borderTopColor: CloudUI.accent,
-                                }}
-                            />
-                        </span>
-                    ) : (
-                        value
-                    )}
-                </p>
-                <p css={tw`mt-1 text-sm`} style={{ color: CloudUI.textMuted }}>
-                    {hint}
-                </p>
-            </div>
-        </div>
-    </div>
-);
