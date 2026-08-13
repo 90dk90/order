@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+# 1vps-vm — self-hosted KVM agent (LumenVM replacement)
+# Same Wings/Jexactyl env contract; downloads from official mirrors only.
+set -euo pipefail
+
+VERSION="0.1.0"
+HOME_DIR="${HOME_DIR:-/home/container}"
+CACHE_DIR="${CACHE_DIR:-/opt/1vps/lumenvm-net/vm-images}"
+WORKDIR="${HOME_DIR}"
+cd "$WORKDIR"
+
+log()  { printf ' \033[32m●\033[37m %s\033[0m\n' "$*"; }
+info() { printf ' \033[34m●\033[37m %s\033[0m\n' "$*"; }
+err()  { printf ' \033[31m●\033[37m %s\033[0m\n' "$*" >&2; }
+
+banner() {
+  printf '\033[34m'
+  cat <<'EOF'
+   __                      _____ _____
+  |  |   _ _ _____ ___ ___|  |  |     |
+  |  |__| | |     | -_|   |  |  | | | |
+  |_____|___|_|_|_|___|_|_|\___/|_|_|_|
+         1vps-vm (self-hosted)
+EOF
+  printf '\033[0m\n'
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || { err "missing command: $1"; exit 1; }
+}
+
+VM_OS="${VM_OS:-debian-12}"
+VM_OS="${VM_OS##*:}"
+OS_PASSWORD="${OS_PASSWORD:-changeme}"
+OS_HOSTNAME="${OS_HOSTNAME:-1vpsvm}"
+OS_PUBKEY="${OS_PUBKEY:-}"
+OS_DISKSIZE="${OS_DISKSIZE:-50}"
+SERVER_MEMORY="${SERVER_MEMORY:-2048}"
+SERVER_IP="${SERVER_IP:-}"
+ADDITIONAL_PORTS="${ADDITIONAL_PORTS:-22}"
+UEFI="${UEFI:-0}"
+PACKAGE_UPDATE="${PACKAGE_UPDATE:-0}"
+P_SERVER_UUID="${P_SERVER_UUID:-unknown}"
+FORCE_PROVISION="${FORCE_PROVISION:-0}"
+
+DISK_FILE="${WORKDIR}/${VM_OS}.qcow2"
+SEED_ISO="${WORKDIR}/.1vps-seed.iso"
+CIDATA_DIR="${WORKDIR}/.1vps-cidata"
+STATE_FILE="${WORKDIR}/.1vps-vm-state"
+
+declare -A IMAGE_URLS=(
+  [debian-10]="https://cloud.debian.org/images/cloud/buster/latest/debian-10-genericcloud-amd64.qcow2"
+  [debian-11]="https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-genericcloud-amd64.qcow2"
+  [debian-12]="https://gemmei.ftp.acc.umu.se/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+  [debian-13]="https://gemmei.ftp.acc.umu.se/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2"
+  [ubuntu-18]="https://cloud-images.ubuntu.com/releases/18.04/release/ubuntu-18.04-server-cloudimg-amd64.img"
+  [ubuntu-20]="https://cloud-images.ubuntu.com/releases/20.04/release/ubuntu-20.04-server-cloudimg-amd64.img"
+  [ubuntu-22]="https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
+  [ubuntu-24]="https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+)
+
+is_valid_qcow() {
+  local f="$1"
+  [[ -f "$f" ]] || return 1
+  local sz
+  sz="$(stat -c%s "$f" 2>/dev/null || echo 0)"
+  [[ "$sz" -gt 1048576 ]] || return 1
+  qemu-img info "$f" >/dev/null 2>&1
+}
+
+fetch_image() {
+  local os="$1" dest="$2"
+  local url="${IMAGE_URLS[$os]:-}"
+  local cache="${CACHE_DIR}/${os}.qcow2"
+
+  mkdir -p "$CACHE_DIR"
+
+  if is_valid_qcow "$cache"; then
+    log "Using cached image ${cache}"
+    cp -f "$cache" "$dest"
+    return 0
+  fi
+
+  if [[ -z "$url" ]]; then
+    err "No download URL for OS=${os}"
+    exit 1
+  fi
+
+  info "Downloading image for ${os} (direct mirror, no Lumen API)"
+  info "${url}"
+  local tmp="${cache}.partial"
+  rm -f "$tmp"
+  if command -v curl >/dev/null 2>&1; then
+    curl -4 -fL --retry 5 --retry-delay 2 --connect-timeout 30 -o "$tmp" "$url"
+  else
+    wget -4 -O "$tmp" "$url"
+  fi
+  if ! is_valid_qcow "$tmp"; then
+    err "Downloaded file is not a valid disk image"
+    rm -f "$tmp"
+    exit 1
+  fi
+  mv -f "$tmp" "$cache"
+  cp -f "$cache" "$dest"
+  log "Image ready ($(du -h "$dest" | awk '{print $1}'))"
+}
+
+resize_disk() {
+  local f="$1" gb="$2"
+  local cur want
+  cur=$(qemu-img info --output=json "$f" | sed -n 's/.*"virtual-size": \([0-9]*\).*/\1/p' | head -1)
+  want=$((gb * 1024 * 1024 * 1024))
+  if [[ -n "$cur" && "$cur" -lt "$want" ]]; then
+    info "Resizing disk to ${gb}G"
+    qemu-img resize "$f" "${gb}G"
+  fi
+}
+
+write_cidata() {
+  rm -rf "$CIDATA_DIR"
+  mkdir -p "$CIDATA_DIR"
+
+  cat >"${CIDATA_DIR}/meta-data" <<EOF
+instance-id: ${P_SERVER_UUID}
+local-hostname: ${OS_HOSTNAME}
+EOF
+
+  cat >"${CIDATA_DIR}/network-config" <<'EOF'
+version: 2
+ethernets:
+  id0:
+    match:
+      name: "en* ens* eth*"
+    dhcp4: true
+    dhcp6: false
+EOF
+
+  {
+    echo '#cloud-config'
+    echo "hostname: ${OS_HOSTNAME}"
+    echo "manage_etc_hosts: true"
+    echo "ssh_pwauth: true"
+    echo "disable_root: false"
+    echo "chpasswd:"
+    echo "  expire: false"
+    echo "  list: |"
+    echo "    root:${OS_PASSWORD}"
+    if [[ "$PACKAGE_UPDATE" == "1" ]]; then
+      echo "package_update: true"
+    fi
+    if [[ -n "$OS_PUBKEY" ]]; then
+      echo "users:"
+      echo "  - name: root"
+      echo "    lock_passwd: false"
+      echo "    ssh_authorized_keys:"
+      echo "      - ${OS_PUBKEY}"
+    fi
+    cat <<'EOF'
+growpart:
+  mode: auto
+  devices: ["/"]
+runcmd:
+  - [ bash, -lc, "sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config || true" ]
+  - [ bash, -lc, "sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config || true" ]
+  - [ bash, -lc, "systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true" ]
+EOF
+  } >"${CIDATA_DIR}/user-data"
+
+  rm -f "$SEED_ISO"
+  if command -v cloud-localds >/dev/null 2>&1; then
+    cloud-localds --network-config "${CIDATA_DIR}/network-config" \
+      "$SEED_ISO" "${CIDATA_DIR}/user-data" "${CIDATA_DIR}/meta-data"
+  else
+    genisoimage -output "$SEED_ISO" -volid cidata -joliet -rock \
+      "${CIDATA_DIR}/user-data" "${CIDATA_DIR}/meta-data" "${CIDATA_DIR}/network-config" \
+      >/dev/null 2>&1
+  fi
+  log "Cloud-init seed ready"
+}
+
+parse_ports() {
+  local raw="${1// /}"
+  IFS=',' read -ra parts <<<"$raw"
+  local out=() p has22=0
+  for p in "${parts[@]}"; do
+    [[ "$p" =~ ^[0-9]+$ ]] || continue
+    out+=("$p")
+    [[ "$p" == "22" ]] && has22=1
+  done
+  [[ "$has22" -eq 1 ]] || out+=(22)
+  printf '%s\n' "${out[@]}" | awk 'NF && !a[$0]++'
+}
+
+build_hostfwd() {
+  local fwd="" p
+  while read -r p; do
+    [[ -z "$p" ]] && continue
+    fwd+=",hostfwd=tcp::${p}-:${p}"
+    fwd+=",hostfwd=udp::${p}-:${p}"
+  done < <(parse_ports "$ADDITIONAL_PORTS")
+  printf '%s' "$fwd"
+}
+
+smp_count() {
+  local n
+  n=$(nproc 2>/dev/null || echo 2)
+  [[ "$n" -ge 1 ]] || n=1
+  [[ "$n" -gt 32 ]] && n=32
+  echo "$n"
+}
+
+boot_vm() {
+  info "Booting ${VM_OS}"
+  local mem="${SERVER_MEMORY}"
+  local smp hostfwd lip
+  smp=$(smp_count)
+  hostfwd=$(build_hostfwd)
+  lip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  [[ -n "$lip" ]] && log "The local ip adress is ${lip}"
+  log "Forwarding user ports."
+
+  mkdir -p "${WORKDIR}/shared"
+
+  local args=(
+    -name "1vps-${P_SERVER_UUID}"
+    -m "${mem}M"
+    -smp "$smp"
+    -cpu host
+    -enable-kvm
+    -display none
+    -usb -device usb-tablet
+    -drive "file=${DISK_FILE},format=qcow2,if=virtio,cache=writeback"
+    -drive "file=${SEED_ISO},media=cdrom,readonly=on"
+    -smbios "type=1,manufacturer=1VPS,product=1vps-vm,version=${VERSION},serial=${P_SERVER_UUID}"
+    -virtfs "local,path=${WORKDIR}/shared,mount_tag=shared,security_model=none"
+    -netdev "user,id=net0${hostfwd}"
+    -device "virtio-net-pci,netdev=net0"
+  )
+
+  if [[ "$UEFI" == "1" ]]; then
+    local ovmf
+    for ovmf in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd /OVMF.fd; do
+      if [[ -f "$ovmf" ]]; then
+        args+=(-drive "if=pflash,format=raw,readonly=on,file=${ovmf}")
+        break
+      fi
+    done
+  fi
+
+  echo "booted_at=$(date -Is)" >"$STATE_FILE"
+  echo "os=${VM_OS}" >>"$STATE_FILE"
+  info "Lancement de 1vps-vm"
+  exec qemu-system-x86_64 "${args[@]}"
+}
+
+main() {
+  banner
+  need_cmd qemu-system-x86_64
+  need_cmd qemu-img
+
+  log "Checking the current installation."
+  info "OS=${VM_OS} disk=${OS_DISKSIZE}G mem=${SERVER_MEMORY}M ip=${SERVER_IP:-n/a}"
+
+  # Purge leftover empty/corrupt disks from LumenVM failed boots
+  if [[ -e "$DISK_FILE" ]] && ! is_valid_qcow "$DISK_FILE"; then
+    err "Removing invalid disk ${DISK_FILE}"
+    rm -f "$DISK_FILE"
+  fi
+  # Also wipe other leftover empty *.qcow2 stubs
+  local stub
+  for stub in "${WORKDIR}"/*.qcow2; do
+    [[ -e "$stub" ]] || continue
+    if ! is_valid_qcow "$stub"; then
+      err "Removing invalid stub $(basename "$stub")"
+      rm -f "$stub"
+    fi
+  done
+
+  local first_boot=0
+  if [[ "$FORCE_PROVISION" == "1" ]]; then
+    rm -f "$DISK_FILE" "$SEED_ISO"
+  fi
+
+  if ! is_valid_qcow "$DISK_FILE"; then
+    first_boot=1
+    fetch_image "$VM_OS" "$DISK_FILE"
+  else
+    log "Existing disk found"
+  fi
+
+  resize_disk "$DISK_FILE" "$OS_DISKSIZE"
+
+  if [[ "$first_boot" -eq 1 || ! -f "$SEED_ISO" ]]; then
+    info "Provisioning."
+    write_cidata
+  fi
+
+  boot_vm
+}
+
+main "$@"
