@@ -36,10 +36,10 @@ LICENSE='…' ./scripts/sync-lumen-desktops-to-s3.sh   # admin seed only
 |----------|--------|
 | `OS_PASSWORD` / `OS_HOSTNAME` / `OS_PUBKEY` | Linux cloud-init; Windows Cloudbase-Init when present in image |
 | `OS_DISKSIZE` | Auto from `{{server.build.disk}}` (MiB → GiB), hidden |
-| `PACKAGE_UPDATE` | cloud-init package update on first boot |
+| `PACKAGE_UPDATE` | Hidden, always `0` (images stay warm; client can `apt update`) |
 | `DISPLAY_MODE` | see above |
 | `ADDITIONAL_PORTS` | Extra guest TCP/UDP forwards |
-| `UEFI` | OVMF from image (`/usr/share/OVMF`) when `1` |
+| `UEFI` | Hidden, default SeaBIOS (`0`). OVMF on host if an admin forces `1` |
 
 ## Layout
 
