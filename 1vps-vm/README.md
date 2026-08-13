@@ -11,10 +11,11 @@ Self-hosted KVM agent replacing LumenVM for Digi / 1VPS.
 
 `SHA256SUMS` (public) verified after download / cache hit.
 
+**Fast path:** rclone multi-stream (16) over the S3 API (much faster than plain HTTP on this node); server disks use a **qcow2 backing file** on the host cache → near-instant provision when warm.
+
 ```bash
-./scripts/prewarm-cache.sh
+./scripts/prewarm-cache.sh          # multi-stream warm cache
 ./scripts/publish-checksums.sh
-PUSH=1 ./docker/build-all-tags.sh   # needs ghcr auth
 ```
 
 ## Console / DISPLAY_MODE
