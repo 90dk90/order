@@ -4,10 +4,10 @@
 #   - /usr/bin/qemu-system-x86_64 wrapper → TAP + virtio-net + DHCP 10.0.2.15
 #   - lumen-autoballoon (QMP) for RAM reclaim
 #   - lumen-dedicated-ip-forward for public IP → container DNAT/SNAT
-# Linux images: public Hetzner S3. Windows: host cache / Lumen LICENSE (private).
+# Images: Hetzner S3 only (public HTTP or private rclone). No Lumen API.
 set -euo pipefail
 
-VERSION="0.4.0"
+VERSION="0.5.0"
 HOME_DIR="${HOME_DIR:-/home/container}"
 CACHE_DIR="${CACHE_DIR:-/opt/1vps/lumenvm-net/vm-images}"
 WORKDIR="${HOME_DIR}"
@@ -43,12 +43,12 @@ OS_PUBKEY="${OS_PUBKEY:-}"
 OS_DISKSIZE="${OS_DISKSIZE:-50}"
 SERVER_MEMORY="${SERVER_MEMORY:-2048}"
 SERVER_IP="${SERVER_IP:-}"
-ADDITIONAL_PORTS="${ADDITIONAL_PORTS:-22}"
+ADDITIONAL_PORTS="${ADDITIONAL_PORTS:-}"
 UEFI="${UEFI:-0}"
 PACKAGE_UPDATE="${PACKAGE_UPDATE:-0}"
+DISPLAY_MODE="${DISPLAY_MODE:-ssh}"
 P_SERVER_UUID="${P_SERVER_UUID:-unknown}"
 FORCE_PROVISION="${FORCE_PROVISION:-0}"
-LICENSE="${LICENSE:-}"
 
 DISK_FILE="${WORKDIR}/${VM_OS}.qcow2"
 SEED_ISO="${WORKDIR}/.1vps-seed.iso"
@@ -56,8 +56,11 @@ CIDATA_DIR="${WORKDIR}/.1vps-cidata"
 STATE_FILE="${WORKDIR}/.1vps-vm-state"
 SERIAL_LOG="${WORKDIR}/serial.log"
 
-# Hetzner Object Storage (fsn1) — public-read Linux objects in bucket 1vps-vm-images
+# Hetzner Object Storage (fsn1) — bucket 1vps-vm-images
 VM_IMAGE_BASE="${VM_IMAGE_BASE:-https://fsn1.your-objectstorage.com/1vps-vm-images}"
+S3_REMOTE="${S3_REMOTE:-hetzner:1vps-vm-images}"
+RCLONE_BIN="${RCLONE_BIN:-/opt/1vps/lumenvm-net/bin/rclone}"
+RCLONE_CONFIG="${RCLONE_CONFIG:-/opt/1vps/lumenvm-net/rclone/rclone.conf}"
 
 SUPPORTED_LINUX=(
   debian-10 debian-11 debian-12 debian-13
@@ -66,7 +69,6 @@ SUPPORTED_LINUX=(
   kali-desktop debian-12-desktop ubuntu-24-desktop
 )
 
-# Pre-activated Lumen images — host cache or LICENSE download (Windows/Redstar never public).
 SUPPORTED_WINDOWS=(
   windows-2022-desktop windows-10-desktop windows-7-desktop redstar-desktop
 )
@@ -78,14 +80,29 @@ is_windows_os() {
   esac
 }
 
-is_lumen_private_os() {
-  # Images that must not be fetched from public S3 URLs
+# Private ACL on S3 — must use rclone credentials, never public HTTP.
+is_private_s3_os() {
   is_windows_os "$1"
 }
 
 image_url_for() {
   local os="$1"
   printf '%s/%s.qcow2' "${VM_IMAGE_BASE%/}" "$os"
+}
+
+# Panel disk is MiB ({{server.build.disk}}). Manual values stay in GiB.
+normalize_disksize() {
+  local v="${OS_DISKSIZE}"
+  if [[ "$v" =~ ^[0-9]+$ ]] && [[ "$v" -ge 1024 ]]; then
+    v=$((v / 1024))
+    [[ "$v" -lt 1 ]] && v=1
+    info "OS_DISKSIZE from panel disk quota → ${v}G"
+  fi
+  if ! [[ "$v" =~ ^[0-9]+$ ]] || [[ "$v" -lt 1 ]]; then
+    err "Invalid OS_DISKSIZE=${OS_DISKSIZE}"
+    exit 1
+  fi
+  OS_DISKSIZE="$v"
 }
 
 is_valid_qcow() {
@@ -97,79 +114,63 @@ is_valid_qcow() {
   qemu-img info "$f" >/dev/null 2>&1
 }
 
-fetch_windows_from_lumen() {
-  local os="$1" cache="$2"
-  local gz="${cache}.gz" tmp="${cache}.partial"
-  [[ -n "$LICENSE" && "$LICENSE" != "PASTE-YOUR-LICENSE-HERE" ]] || {
-    err "Windows image missing from cache and LICENSE unset"
-    err "Warm cache: LICENSE=… ./scripts/fetch-windows-from-lumen.sh ${os}"
-    exit 1
-  }
-  info "Downloading pre-activated ${os} via Lumen API (private)"
-  rm -f "$gz" "$tmp"
-  wget --user-agent=lumenvm-api-agent \
-    --header="License: ${LICENSE}" \
-    --header="Product: 1" \
-    --header="File: ${os}" \
-    -O "$gz" \
-    "https://api.lumenvm.cloud/content"
-  gzip -dc "$gz" > "$tmp"
-  rm -f "$gz"
-  if ! is_valid_qcow "$tmp"; then
-    err "Windows download is not a valid qcow2"
-    rm -f "$tmp"
-    exit 1
+fetch_from_s3_public() {
+  local os="$1" tmp="$2"
+  local url
+  url="$(image_url_for "$os")"
+  info "Downloading ${os} from S3 (public)"
+  info "${url}"
+  if command -v curl >/dev/null 2>&1; then
+    curl -4 -fL --retry 5 --retry-delay 2 --connect-timeout 30 -o "$tmp" "$url"
+  else
+    wget -4 -O "$tmp" "$url"
   fi
-  mv -f "$tmp" "$cache"
+}
+
+fetch_from_s3_private() {
+  local os="$1" tmp="$2"
+  local remote="${S3_REMOTE%/}/${os}.qcow2"
+  [[ -x "$RCLONE_BIN" ]] || { err "rclone missing at ${RCLONE_BIN}"; exit 1; }
+  [[ -f "$RCLONE_CONFIG" ]] || { err "rclone config missing at ${RCLONE_CONFIG}"; exit 1; }
+  info "Downloading ${os} from S3 (private rclone)"
+  info "${remote}"
+  "$RCLONE_BIN" --config "$RCLONE_CONFIG" copyto "$remote" "$tmp" \
+    --retries 5 --low-level-retries 10 --stats 30s --stats-one-line
 }
 
 fetch_image() {
   local os="$1" dest="$2"
-  local url cache tmp known=0 x
+  local cache tmp known=0 x
   mkdir -p "$CACHE_DIR"
   cache="${CACHE_DIR}/${os}.qcow2"
+  tmp="${cache}.partial"
 
   if is_windows_os "$os"; then
     for x in "${SUPPORTED_WINDOWS[@]}"; do
       [[ "$x" == "$os" ]] && known=1 && break
     done
     [[ "$known" -eq 1 ]] || { err "Unsupported Windows OS=${os}"; exit 1; }
-    if is_valid_qcow "$cache"; then
-      log "Using cached Windows image ${cache}"
-      cp -f "$cache" "$dest"
-      return 0
-    fi
-    fetch_windows_from_lumen "$os" "$cache"
-    cp -f "$cache" "$dest"
-    log "Windows image ready ($(du -h "$dest" | awk '{print $1}'))"
-    return 0
-  fi
-
-  for x in "${SUPPORTED_LINUX[@]}"; do
-    [[ "$x" == "$os" ]] && known=1 && break
-  done
-  if [[ "$known" -ne 1 ]]; then
-    err "Unsupported OS=${os} (not in S3 catalog)"
-    exit 1
-  fi
-
-  url="$(image_url_for "$os")"
-
-  if is_valid_qcow "$cache"; then
-    log "Using cached image ${cache}"
-    cp -f "$cache" "$dest"
-    return 0
-  fi
-
-  info "Downloading image for ${os} from Hetzner S3"
-  info "${url}"
-  tmp="${cache}.partial"
-  rm -f "$tmp"
-  if command -v curl >/dev/null 2>&1; then
-    curl -4 -fL --retry 5 --retry-delay 2 --connect-timeout 30 -o "$tmp" "$url"
   else
-    wget -4 -O "$tmp" "$url"
+    for x in "${SUPPORTED_LINUX[@]}"; do
+      [[ "$x" == "$os" ]] && known=1 && break
+    done
+    [[ "$known" -eq 1 ]] || { err "Unsupported OS=${os} (not in S3 catalog)"; exit 1; }
   fi
+
+  # Cache only after a prior S3 download — never use foreign/Lumen paths.
+  if is_valid_qcow "$cache"; then
+    log "Using S3 cache ${cache}"
+    cp -f "$cache" "$dest"
+    return 0
+  fi
+
+  rm -f "$tmp"
+  if is_private_s3_os "$os"; then
+    fetch_from_s3_private "$os" "$tmp"
+  else
+    fetch_from_s3_public "$os" "$tmp"
+  fi
+
   if ! is_valid_qcow "$tmp"; then
     err "Downloaded file is not a valid disk image"
     rm -f "$tmp"
@@ -191,11 +192,10 @@ resize_disk() {
   fi
 }
 
-write_cidata() {
+write_cidata_linux() {
   rm -rf "$CIDATA_DIR"
   mkdir -p "$CIDATA_DIR"
 
-  # Unique instance-id so cloud-init re-runs after reprovision
   local iid="${P_SERVER_UUID}-$(date +%s)"
   cat >"${CIDATA_DIR}/meta-data" <<EOF
 instance-id: ${iid}
@@ -203,7 +203,6 @@ local-hostname: ${OS_HOSTNAME}
 EOF
 
   # Netplan match must be ONE pattern per ethernet stanza.
-  # Broken "en* ens* eth*" left the NIC unconfigured (0 packets on tap0).
   cat >"${CIDATA_DIR}/network-config" <<'EOF'
 version: 2
 ethernets:
@@ -234,7 +233,13 @@ EOF
     echo "  expire: false"
     echo "  list: |"
     echo "    root:${OS_PASSWORD}"
-    # Never package_update during cloud-init first boot (blocks SSH if net flaky).
+    if [[ "$PACKAGE_UPDATE" == "1" || "$PACKAGE_UPDATE" == "true" ]]; then
+      echo "package_update: true"
+      echo "package_upgrade: true"
+    else
+      echo "package_update: false"
+      echo "package_upgrade: false"
+    fi
     if [[ -n "$OS_PUBKEY" ]]; then
       echo "users:"
       echo "  - name: root"
@@ -254,37 +259,105 @@ runcmd:
 EOF
   } >"${CIDATA_DIR}/user-data"
 
+  pack_cidata_iso
+  log "Cloud-init seed ready"
+}
+
+# Cloudbase-Init NoCloud for pre-activated Windows images (password + hostname).
+write_cidata_windows() {
+  rm -rf "$CIDATA_DIR"
+  mkdir -p "$CIDATA_DIR"
+
+  local iid="${P_SERVER_UUID}-$(date +%s)"
+  cat >"${CIDATA_DIR}/meta-data" <<EOF
+instance-id: ${iid}
+hostname: ${OS_HOSTNAME}
+local-hostname: ${OS_HOSTNAME}
+admin_pass: ${OS_PASSWORD}
+EOF
+
+  cat >"${CIDATA_DIR}/user-data" <<EOF
+#cloud-config
+hostname: ${OS_HOSTNAME}
+set_hostname: true
+manage_windows_password: true
+users:
+  - name: Administrator
+    primary_group: Administrators
+    passwd: ${OS_PASSWORD}
+    inactive: false
+EOF
+
+  # Empty network-config keeps some Cloudbase-Init builds happy
+  : >"${CIDATA_DIR}/network-config"
+
+  pack_cidata_iso
+  log "Cloudbase-Init seed ready (password/hostname)"
+}
+
+pack_cidata_iso() {
   rm -f "$SEED_ISO"
-  if command -v cloud-localds >/dev/null 2>&1; then
+  if command -v cloud-localds >/dev/null 2>&1 && [[ -s "${CIDATA_DIR}/network-config" ]]; then
     cloud-localds --network-config "${CIDATA_DIR}/network-config" \
       "$SEED_ISO" "${CIDATA_DIR}/user-data" "${CIDATA_DIR}/meta-data"
-  else
-    # NoCloud requires volume id "cidata"
+  elif command -v genisoimage >/dev/null 2>&1; then
     genisoimage -output "$SEED_ISO" -volid cidata -joliet -rock \
       -graft-points \
       "user-data=${CIDATA_DIR}/user-data" \
       "meta-data=${CIDATA_DIR}/meta-data" \
       "network-config=${CIDATA_DIR}/network-config" \
       >/dev/null 2>&1
+  elif command -v mkisofs >/dev/null 2>&1; then
+    mkisofs -output "$SEED_ISO" -volid cidata -joliet -rock \
+      -graft-points \
+      "user-data=${CIDATA_DIR}/user-data" \
+      "meta-data=${CIDATA_DIR}/meta-data" \
+      "network-config=${CIDATA_DIR}/network-config" \
+      >/dev/null 2>&1
+  else
+    err "Need genisoimage/mkisofs/cloud-localds to build cidata ISO"
+    exit 1
   fi
-  log "Cloud-init seed ready"
+}
+
+# Merge DISPLAY_MODE into forwarded ports (ssh/rdp/both).
+effective_ports() {
+  local raw="${ADDITIONAL_PORTS// /}"
+  local mode
+  mode=$(printf '%s' "$DISPLAY_MODE" | tr '[:upper:]' '[:lower:]')
+  case "$mode" in
+    ssh)  raw="${raw:+$raw,}22" ;;
+    rdp)  raw="${raw:+$raw,}3389" ;;
+    both) raw="${raw:+$raw,}22,3389" ;;
+    vnc|novnc|spice|none|"") ;;
+    *) ;;
+  esac
+  # OS defaults if still empty
+  if [[ -z "$raw" ]]; then
+    if is_windows_os "$VM_OS"; then
+      raw="3389"
+    else
+      raw="22"
+    fi
+  fi
+  # Always ensure RDP for Windows / SSH for Linux regardless of mode typos
+  if is_windows_os "$VM_OS"; then
+    [[ ",${raw}," == *",3389,"* ]] || raw="${raw},3389"
+  else
+    [[ ",${raw}," == *",22,"* ]] || raw="${raw},22"
+  fi
+  printf '%s' "$raw"
 }
 
 parse_ports() {
-  local raw="${1// /}"
+  local raw
+  raw="$(effective_ports)"
   IFS=',' read -ra parts <<<"$raw"
-  local out=() p has22=0 has3389=0
+  local out=() p
   for p in "${parts[@]}"; do
     [[ "$p" =~ ^[0-9]+$ ]] || continue
     out+=("$p")
-    [[ "$p" == "22" ]] && has22=1
-    [[ "$p" == "3389" ]] && has3389=1
   done
-  if is_windows_os "$VM_OS"; then
-    [[ "$has3389" -eq 1 ]] || out+=(3389)
-  else
-    [[ "$has22" -eq 1 ]] || out+=(22)
-  fi
   printf '%s\n' "${out[@]}" | awk 'NF && !a[$0]++'
 }
 
@@ -294,7 +367,7 @@ build_hostfwd() {
     [[ -z "$p" ]] && continue
     fwd+=",hostfwd=tcp::${p}-:${p}"
     fwd+=",hostfwd=udp::${p}-:${p}"
-  done < <(parse_ports "$ADDITIONAL_PORTS")
+  done < <(parse_ports)
   printf '%s' "$fwd"
 }
 
@@ -315,16 +388,11 @@ boot_vm() {
   lip=$(hostname -I 2>/dev/null | awk '{print $1}')
   [[ -n "$lip" ]] && log "The local ip adress is ${lip}"
   log "Forwarding user ports (host wrapper replaces NIC → TAP)."
+  info "DISPLAY_MODE=${DISPLAY_MODE}"
 
   mkdir -p "${WORKDIR}/shared"
   : >"${SERIAL_LOG}"
 
-  # Pass user+hostfwd so the host qemu wrapper can:
-  #  1) strip user net / inject TAP+virtio-net-pci
-  #  2) install DNAT for forwarded ports
-  #  3) start lumen-dhcp (10.0.2.15)
-  #  4) add virtio-balloon + QMP for lumen-autoballoon
-  #  5) for Windows filenames: attach balloon-setup.iso (VirtIO balloon drivers)
   local args=(
     -name "1vps-${P_SERVER_UUID}"
     -m "${mem}M"
@@ -342,8 +410,11 @@ boot_vm() {
   )
 
   if is_windows_os "$VM_OS"; then
-    # Match Lumen: IDE disk (preactivated image expects this); wrapper adds balloon ISO.
+    # Match Lumen: IDE disk; wrapper adds balloon ISO. Attach cidata for password.
     args+=(-drive "file=${DISK_FILE},format=qcow2")
+    if [[ -f "$SEED_ISO" ]]; then
+      args+=(-drive "file=${SEED_ISO},media=cdrom,readonly=on")
+    fi
   else
     args+=(
       -drive "file=${DISK_FILE},format=qcow2,if=virtio,cache=writeback,discard=unmap"
@@ -366,6 +437,8 @@ boot_vm() {
     echo "os=${VM_OS}"
     echo "version=${VERSION}"
     echo "server_ip=${SERVER_IP}"
+    echo "disk_gb=${OS_DISKSIZE}"
+    echo "display_mode=${DISPLAY_MODE}"
   } >"$STATE_FILE"
 
   info "Lancement de 1vps-vm"
@@ -376,6 +449,7 @@ main() {
   banner
   need_cmd qemu-system-x86_64
   need_cmd qemu-img
+  normalize_disksize
 
   log "Checking the current installation."
   info "OS=${VM_OS} disk=${OS_DISKSIZE}G mem=${SERVER_MEMORY}M ip=${SERVER_IP:-n/a}"
@@ -409,10 +483,13 @@ main() {
   resize_disk "$DISK_FILE" "$OS_DISKSIZE"
 
   if is_windows_os "$VM_OS"; then
-    info "Windows: skip cloud-init (pre-activated image). Balloon via host wrapper + balloon-setup.iso."
+    if [[ "$first_boot" -eq 1 || ! -f "$SEED_ISO" || "$FORCE_PROVISION" == "1" ]]; then
+      info "Provisioning Windows (Cloudbase-Init password/hostname)."
+      write_cidata_windows
+    fi
   elif [[ "$first_boot" -eq 1 || ! -f "$SEED_ISO" ]]; then
     info "Provisioning."
-    write_cidata
+    write_cidata_linux
   fi
 
   boot_vm
