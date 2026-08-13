@@ -258,10 +258,10 @@ export default ({ row, prefixLabel }: Props) => {
         }
 
         const fallback: BreakdownItem[] = [
-            { key: 'tcp', label: 'TCP', value: Math.max(0, Number(traffic?.tcp) || 0), packets: Math.max(0, Number(traffic?.tcp) || 0), unit: 'packets' },
-            { key: 'udp', label: 'UDP', value: Math.max(0, Number(traffic?.udp) || 0), packets: Math.max(0, Number(traffic?.udp) || 0), unit: 'packets' },
-            { key: 'icmp', label: 'ICMP', value: Math.max(0, Number(traffic?.icmp) || 0), packets: Math.max(0, Number(traffic?.icmp) || 0), unit: 'packets' },
-            { key: 'other', label: 'Autre', value: Math.max(0, Number(traffic?.other) || 0), packets: Math.max(0, Number(traffic?.other) || 0), unit: 'packets' },
+            { key: 'tcp', label: 'TCP', value: Math.max(0, Number(traffic?.tcp) || 0), packets: Math.max(0, Number(traffic?.tcp) || 0), unit: 'packets' as const },
+            { key: 'udp', label: 'UDP', value: Math.max(0, Number(traffic?.udp) || 0), packets: Math.max(0, Number(traffic?.udp) || 0), unit: 'packets' as const },
+            { key: 'icmp', label: 'ICMP', value: Math.max(0, Number(traffic?.icmp) || 0), packets: Math.max(0, Number(traffic?.icmp) || 0), unit: 'packets' as const },
+            { key: 'other', label: 'Autre', value: Math.max(0, Number(traffic?.other) || 0), packets: Math.max(0, Number(traffic?.other) || 0), unit: 'packets' as const },
         ].filter((x) => x.value > 0);
 
         return fallback.sort((a, b) => b.value - a.value);
