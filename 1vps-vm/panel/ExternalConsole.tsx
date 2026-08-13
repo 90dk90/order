@@ -162,6 +162,7 @@ const ExternalConsole = () => {
     const serverName = ServerContext.useStoreState((s) => s.server.data?.name) || 'Instance';
     const uuid = ServerContext.useStoreState((s) => s.server.data?.uuid);
     const variables = ServerContext.useStoreState((s) => s.server.data?.variables || [], isEqual);
+    const allocations = ServerContext.useStoreState((s) => s.server.data?.allocations || [], isEqual);
     const status = ServerContext.useStoreState((s) => s.status.value);
     const connected = ServerContext.useStoreState((s) => s.socket.connected);
     const instance = ServerContext.useStoreState((s) => s.socket.instance);
@@ -174,11 +175,29 @@ const ExternalConsole = () => {
 
     const displayMode = useMemo(() => {
         const v = variables.find((x) => x.envVariable === 'DISPLAY_MODE' || (x as any).env_variable === 'DISPLAY_MODE');
-        const raw = (v as any)?.serverValue ?? (v as any)?.server_value ?? (v as any)?.value ?? '';
+        const raw =
+            (v as any)?.serverValue ||
+            (v as any)?.server_value ||
+            (v as any)?.defaultValue ||
+            (v as any)?.default_value ||
+            (v as any)?.value ||
+            '';
         return String(raw).toLowerCase();
     }, [variables]);
 
     const graphicEnabled = displayMode === 'novnc' || displayMode === 'vnc';
+
+    const fallbackNovnc = useMemo((): NoVncInfo | null => {
+        const ip = allocations.find((a) => a.isDefault)?.ip || allocations[0]?.ip || null;
+        if (!ip) return null;
+        return {
+            mode: displayMode || 'novnc',
+            available: graphicEnabled,
+            ip,
+            direct_url: `http://${ip}:6080/vnc.html?autoconnect=1&resize=remote`,
+            embed_url: null,
+        };
+    }, [allocations, displayMode, graphicEnabled]);
 
     useEffect(() => {
         document.title = standalone ? `Console — ${serverName}` : 'Console';
@@ -203,6 +222,7 @@ const ExternalConsole = () => {
     useEffect(() => {
         if (!graphicEnabled || !uuid) {
             setNovnc(null);
+            setNovncError(null);
             return;
         }
         let cancelled = false;
@@ -212,12 +232,19 @@ const ExternalConsole = () => {
                 if (!cancelled) setNovnc(data as NoVncInfo);
             })
             .catch(() => {
-                if (!cancelled) setNovncError('Impossible de résoudre l’URL noVNC.');
+                if (cancelled) return;
+                // Map-file permission issues etc.: still offer direct URL from allocations.
+                if (fallbackNovnc) {
+                    setNovnc(fallbackNovnc);
+                    setNovncError(null);
+                } else {
+                    setNovncError('Impossible de résoudre l’URL noVNC.');
+                }
             });
         return () => {
             cancelled = true;
         };
-    }, [graphicEnabled, uuid, status]);
+    }, [graphicEnabled, uuid, status, fallbackNovnc]);
 
     useEffect(() => {
         if (graphicEnabled && displayMode === 'novnc' && status === 'running') {

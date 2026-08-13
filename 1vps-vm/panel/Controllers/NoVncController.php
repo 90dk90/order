@@ -3,7 +3,6 @@
 namespace Jexactyl\Http\Controllers\Api\Client\Servers;
 
 use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\File;
 use Jexactyl\Models\Server;
 use Jexactyl\Http\Controllers\Api\Client\ClientApiController;
 use Jexactyl\Http\Requests\Api\Client\Servers\GetServerRequest;
@@ -15,16 +14,20 @@ class NoVncController extends ClientApiController
 {
     public function __invoke(GetServerRequest $request, Server $server): JsonResponse
     {
-        $mode = strtolower((string) optional(
-            $server->variables->firstWhere('env_variable', 'DISPLAY_MODE')
-        )->server_value);
+        $server->loadMissing(['allocation', 'allocations']);
+
+        // Query the relation builder (not a possibly-stale eager collection) so
+        // server_variables.variable_value AS server_value is present.
+        $variable = $server->variables()->where('env_variable', 'DISPLAY_MODE')->first();
+        $mode = strtolower((string) (
+            ($variable->server_value ?? null) ?: ($variable->default_value ?? '') ?: 'ssh'
+        ));
 
         $allocation = $server->allocation;
         $ip = $allocation?->ip;
         $novncPort = 6080;
         $vncPort = 5900;
 
-        // Prefer dedicated IP; fall back to first non-null allocation.
         if (!$ip) {
             $ip = optional($server->allocations->first())->ip;
         }
@@ -33,14 +36,25 @@ class NoVncController extends ClientApiController
 
         $embed = null;
         $expires = null;
-        if ($ip && config('jexactyl.novnc_proxy.enabled', true)) {
-            $mapDir = (string) config('jexactyl.novnc_proxy.map_dir', '/var/lib/1vps-novnc/map');
-            File::ensureDirectoryExists($mapDir, 0750);
-            File::put($mapDir . '/' . $server->uuid, $ip . ':' . $novncPort);
+        if ($ip && filter_var(config('jexactyl.novnc_proxy.enabled', true), FILTER_VALIDATE_BOOLEAN)) {
+            $mapDir = (string) config('jexactyl.novnc_proxy.map_dir', storage_path('app/1vps-novnc/map'));
+            if (!is_dir($mapDir)) {
+                @mkdir($mapDir, 0750, true);
+            }
+            $mapFile = rtrim($mapDir, '/') . '/' . $server->uuid;
+            $upstream = $ip . ':' . $novncPort;
+            if (@file_put_contents($mapFile, $upstream) === false) {
+                $fallback = storage_path('app/1vps-novnc/map');
+                if (!is_dir($fallback)) {
+                    @mkdir($fallback, 0750, true);
+                }
+                @file_put_contents($fallback . '/' . $server->uuid, $upstream);
+            } else {
+                @chmod($mapFile, 0640);
+            }
 
             $ttl = (int) config('jexactyl.novnc_proxy.ttl', 43200);
             $expires = time() + $ttl;
-            $upstream = $ip . ':' . $novncPort;
             $secret = (string) config('jexactyl.novnc_proxy.secret', config('app.key'));
             $token = hash_hmac('sha256', $server->uuid . '|' . $expires . '|' . $upstream, $secret);
             $embed = sprintf(
