@@ -7,7 +7,7 @@
 # Images: Hetzner S3 only (public HTTP or private rclone). No Lumen API.
 set -euo pipefail
 
-VERSION="0.7.0"
+VERSION="0.7.1"
 HOME_DIR="${HOME_DIR:-/home/container}"
 CACHE_DIR="${CACHE_DIR:-/opt/1vps/lumenvm-net/vm-images}"
 WORKDIR="${HOME_DIR}"
@@ -113,7 +113,7 @@ image_url_for() {
 }
 
 # Panel injects SERVER_DISK / OS_DISKSIZE as MiB via EnvironmentService.
-# Manual GiB values (<1024) still accepted.
+# Values may be floats like "35786.000000". Manual GiB (<1024) still OK.
 normalize_disksize() {
   local v="${OS_DISKSIZE}"
   if [[ -z "$v" || "$v" == *"{{"* || "$v" == *"}}"* ]]; then
@@ -123,7 +123,11 @@ normalize_disksize() {
     err "Invalid OS_DISKSIZE=${OS_DISKSIZE} (unresolved). Need numeric MiB/GiB."
     exit 1
   fi
-  if ! [[ "$v" =~ ^[0-9]+$ ]]; then
+  # Strip decimals / whitespace (Panel sometimes sends 35786.000000)
+  v="$(printf '%s' "$v" | tr -d '[:space:]')"
+  if [[ "$v" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    v="${v%%.*}"
+  else
     err "Invalid OS_DISKSIZE=${OS_DISKSIZE}"
     exit 1
   fi
